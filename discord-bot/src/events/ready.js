@@ -10,9 +10,26 @@ module.exports = {
     console.log(`📡 Serveurs : ${client.guilds.cache.size}`);
     client.user.setActivity('🛡️ NAKU Gestion | !help', { type: 3 });
 
-    // Auto-déploiement des commandes slash au démarrage
+    // ── Avatar & Bannière ─────────────────────────────────────────────
+    const avatarPath = path.join(__dirname, '..', '..', 'assets', 'avatar.jpg');
+    const bannerPath = path.join(__dirname, '..', '..', 'assets', 'banner.gif');
+
+    if (fs.existsSync(avatarPath)) {
+      await client.user.setAvatar(avatarPath).catch(err => {
+        console.warn('⚠️  Avatar non mis à jour (peut être en cooldown) :', err.message);
+      });
+      console.log('✅ Avatar appliqué.');
+    }
+
+    if (fs.existsSync(bannerPath)) {
+      await client.user.setBanner(bannerPath).catch(err => {
+        console.warn('⚠️  Bannière non appliquée (requiert bot vérifié) :', err.message);
+      });
+    }
+
+    // ── Auto-déploiement des commandes slash ─────────────────────────
     if (!process.env.CLIENT_ID) {
-      console.warn('⚠️  CLIENT_ID manquant — commandes slash non déployées. Ajoutez CLIENT_ID dans les variables Railway.');
+      console.warn('⚠️  CLIENT_ID manquant — commandes slash non déployées.');
       return;
     }
 
@@ -37,7 +54,7 @@ module.exports = {
         : Routes.applicationCommands(process.env.CLIENT_ID);
 
       await rest.put(route, { body: commands });
-      console.log(`✅ ${commands.length} commandes slash déployées automatiquement.`);
+      console.log(`✅ ${commands.length} commandes slash déployées.`);
     } catch (err) {
       console.error('❌ Erreur déploiement commandes:', err.message);
     }
