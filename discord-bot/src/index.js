@@ -3,6 +3,10 @@ const fs = require('fs');
 const path = require('path');
 require('dotenv').config();
 
+// Créer le dossier data s'il n'existe pas (nécessaire sur Railway)
+const dataDir = path.join(__dirname, '..', 'data');
+if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
+
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -17,10 +21,11 @@ const client = new Client({
 });
 
 client.commands = new Collection();
+client.prefix = '!';
 
+// Charger handlers
 const handlersPath = path.join(__dirname, 'handlers');
-const handlerFiles = fs.readdirSync(handlersPath).filter(f => f.endsWith('.js'));
-for (const file of handlerFiles) {
+for (const file of fs.readdirSync(handlersPath).filter(f => f.endsWith('.js'))) {
   require(path.join(handlersPath, file))(client);
 }
 

@@ -4,19 +4,14 @@
   "description": "Bot Discord NAKU - Modération, Logs, Règlement, Tickets",
   "main": "src/index.js",
   "scripts": {
-    "start": "node src/index.js",
-    "dev": "nodemon src/index.js",
-    "deploy-commands": "node src/deploy-commands.js"
+    "start": "node src/index.js"
   },
   "dependencies": {
     "discord.js": "^14.16.3",
     "dotenv": "^16.4.5",
     "fs-extra": "^11.2.0"
   },
-  "devDependencies": {
-    "nodemon": "^3.1.7"
-  },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=20.0.0"
   }
 }
