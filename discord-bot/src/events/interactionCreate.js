@@ -1,6 +1,11 @@
-const { InteractionType, ChannelType, PermissionFlagsBits, EmbedBuilder, ButtonBuilder, ButtonStyle, ActionRowBuilder } = require('discord.js');
+const {
+  InteractionType, ChannelType, PermissionFlagsBits,
+  EmbedBuilder, ButtonBuilder, ButtonStyle, ActionRowBuilder,
+  ModalBuilder, TextInputBuilder, TextInputStyle,
+} = require('discord.js');
 const { getConfig, setTicket, getTickets, deleteTicket } = require('../utils/config');
 const { sendLog } = require('../utils/logger');
+const { createCaptcha, verifyCaptcha } = require('../utils/captcha');
 
 module.exports = {
   name: 'interactionCreate',
@@ -24,7 +29,112 @@ module.exports = {
       return;
     }
 
-    // ── Bouton "Ouvrir un ticket" ────────────────────────────────────
+    // ── Bouton : Démarrer la vérification captcha ────────────────────
+    if (interaction.isButton() && interaction.customId === 'start_verif') {
+      const config = getConfig(interaction.guild.id);
+
+      if (config.verifRole) {
+        const alreadyVerified = interaction.member.roles.cache.has(config.verifRole);
+        if (alreadyVerified) {
+          return interaction.reply({ content: '✅ Tu es déjà vérifié !', flags: 64 });
+        }
+      }
+
+      const code = createCaptcha(interaction.user.id);
+
+      const captchaDisplay = formatCaptcha(code);
+
+      const embed = new EmbedBuilder()
+        .setColor(0x5865F2)
+        .setTitle('🔐 Vérification — Captcha')
+        .setDescription(
+          `Recopie exactement le code ci-dessous dans le formulaire :\n\n${captchaDisplay}\n\n` +
+          `⏳ Ce code expire dans **5 minutes**.\n` +
+          `> Les espaces et la casse n'ont pas d'importance.`
+        )
+        .setFooter({ text: 'Clique sur "Entrer le code" ci-dessous' })
+        .setTimestamp();
+
+      const btn = new ButtonBuilder()
+        .setCustomId('enter_captcha')
+        .setLabel('📝 Entrer le code')
+        .setStyle(ButtonStyle.Primary);
+
+      const row = new ActionRowBuilder().addComponents(btn);
+
+      return interaction.reply({ embeds: [embed], components: [row], flags: 64 });
+    }
+
+    // ── Bouton : Ouvrir le modal de saisie captcha ───────────────────
+    if (interaction.isButton() && interaction.customId === 'enter_captcha') {
+      const modal = new ModalBuilder()
+        .setCustomId('captcha_modal')
+        .setTitle('🔐 Entrez votre code captcha');
+
+      const input = new TextInputBuilder()
+        .setCustomId('captcha_input')
+        .setLabel('Code captcha (lettres et chiffres)')
+        .setStyle(TextInputStyle.Short)
+        .setMinLength(6)
+        .setMaxLength(6)
+        .setPlaceholder('Ex: X7K2P9')
+        .setRequired(true);
+
+      modal.addComponents(new ActionRowBuilder().addComponents(input));
+      return interaction.showModal(modal);
+    }
+
+    // ── Modal : Vérification du captcha ─────────────────────────────
+    if (interaction.isModalSubmit() && interaction.customId === 'captcha_modal') {
+      await interaction.deferReply({ flags: 64 });
+
+      const input = interaction.fields.getTextInputValue('captcha_input');
+      const result = verifyCaptcha(interaction.user.id, input);
+
+      if (!result.valid) {
+        const msg = result.reason === 'expired'
+          ? '⏰ Ton code a expiré. Clique à nouveau sur **🔐 Se vérifier** pour en obtenir un nouveau.'
+          : '❌ Code incorrect. Clique à nouveau sur **🔐 Se vérifier** pour obtenir un nouveau code.';
+        return interaction.editReply({ content: msg });
+      }
+
+      const config = getConfig(interaction.guild.id);
+
+      if (!config.verifRole) {
+        return interaction.editReply({ content: '⚠️ Aucun rôle de vérification configuré. Contactez un administrateur.' });
+      }
+
+      const role = interaction.guild.roles.cache.get(config.verifRole);
+      if (!role) {
+        return interaction.editReply({ content: '⚠️ Le rôle de vérification est introuvable. Contactez un administrateur.' });
+      }
+
+      try {
+        await interaction.member.roles.add(role);
+      } catch {
+        return interaction.editReply({ content: '❌ Impossible d\'attribuer le rôle. Vérifie que le bot a la permission **Gérer les rôles** et que son rôle est au-dessus du rôle de vérification.' });
+      }
+
+      await sendLog(client, interaction.guild.id, 'member_join', {
+        title: '✅ Membre Vérifié',
+        description: `${interaction.user} a passé la vérification captcha et a reçu le rôle **${role.name}**.`,
+        thumbnail: interaction.user.displayAvatarURL({ dynamic: true }),
+        fields: [
+          { name: 'Utilisateur', value: `${interaction.user.tag} (${interaction.user.id})`, inline: true },
+          { name: 'Rôle attribué', value: role.name, inline: true },
+        ],
+      });
+
+      return interaction.editReply({
+        embeds: [new EmbedBuilder()
+          .setColor(0x00FF88)
+          .setTitle('✅ Vérification réussie !')
+          .setDescription(`Bienvenue sur **${interaction.guild.name}** !\nTu as reçu le rôle <@&${role.id}> et peux maintenant accéder aux salons. 🎉`)
+          .setTimestamp()],
+      });
+    }
+
+    // ── Bouton : Ouvrir un ticket ────────────────────────────────────
     if (interaction.isButton() && interaction.customId === 'open_ticket') {
       await interaction.deferReply({ flags: 64 });
 
@@ -77,7 +187,7 @@ module.exports = {
       return interaction.editReply({ content: `✅ Ton ticket a été créé : ${channel}` });
     }
 
-    // ── Bouton "Fermer le ticket" ────────────────────────────────────
+    // ── Bouton : Fermer le ticket ────────────────────────────────────
     if (interaction.isButton() && interaction.customId === 'close_ticket') {
       await interaction.deferReply({ flags: 64 });
 
@@ -108,3 +218,14 @@ module.exports = {
     }
   },
 };
+
+function formatCaptcha(code) {
+  const blocks = {
+    A:'🅰', B:'🅱', C:'🇨', D:'🇩', E:'🇪', F:'🇫', G:'🇬', H:'🇭',
+    J:'🇯', K:'🇰', L:'🇱', M:'🇲', N:'🇳', P:'🇵', Q:'🇶', R:'🇷',
+    S:'🇸', T:'🇹', U:'🇺', V:'🇻', W:'🇼', X:'🇽', Y:'🇾', Z:'🇿',
+    '2':'2️⃣', '3':'3️⃣', '4':'4️⃣', '5':'5️⃣', '6':'6️⃣',
+    '7':'7️⃣', '8':'8️⃣', '9':'9️⃣',
+  };
+  return `> ## ${code.split('').map(c => blocks[c] || c).join(' ')}`;
+}
