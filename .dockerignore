@@ -1,0 +1,9 @@
+node_modules
+discord-bot/node_modules
+artifacts
+lib
+scripts
+attached_assets
+.git
+*.log
+discord-bot/data
