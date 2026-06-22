@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 require('dotenv').config();
 
-// Créer le dossier data s'il n'existe pas (nécessaire sur Railway)
+// Créer le dossier data s'il n'existe pas (Railway Volume doit être monté sur /app/data)
 const dataDir = path.join(__dirname, '..', 'data');
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 
@@ -14,6 +14,7 @@ const client = new Client({
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.GuildMessageReactions,
     GatewayIntentBits.GuildModeration,
+    GatewayIntentBits.GuildPresences,   // requis pour presenceUpdate (@PUB)
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.DirectMessages,
   ],
