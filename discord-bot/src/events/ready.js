@@ -1,6 +1,8 @@
 const { REST, Routes } = require('discord.js');
 const fs = require('fs');
 const path = require('path');
+const cloudSync = require('../utils/cloudSync');
+const { restoreFromCloud } = require('../utils/config');
 
 module.exports = {
   name: 'ready',
@@ -10,7 +12,11 @@ module.exports = {
     console.log(`📡 Serveurs : ${client.guilds.cache.size}`);
     client.user.setActivity('🛡️ NAKU Gestion | !help', { type: 3 });
 
-    // ── Avatar & Bannière ─────────────────────────────────────────────
+    // ── Initialiser le système de persistance Discord ─────────────────────
+    cloudSync.init(client);
+    await restoreFromCloud();
+
+    // ── Avatar & Bannière ─────────────────────────────────────────────────
     const avatarPath = path.join(__dirname, '..', '..', 'assets', 'avatar.jpg');
     const bannerPath = path.join(__dirname, '..', '..', 'assets', 'banner.gif');
 
@@ -27,7 +33,7 @@ module.exports = {
       });
     }
 
-    // ── Auto-déploiement des commandes slash ─────────────────────────
+    // ── Auto-déploiement des commandes slash ──────────────────────────────
     if (!process.env.CLIENT_ID) {
       console.warn('⚠️  CLIENT_ID manquant — commandes slash non déployées.');
       return;
