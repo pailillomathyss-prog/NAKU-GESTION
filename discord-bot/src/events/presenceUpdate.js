@@ -2,16 +2,22 @@ const { ActivityType } = require('discord.js');
 const { getConfig } = require('../utils/config');
 const { sendLog } = require('../utils/logger');
 
-function getCustomStatus(presence) {
-  if (!presence?.activities) return null;
+/** Extrait tout le texte du statut personnalisé */
+function getStatusText(presence) {
+  if (!presence?.activities) return '';
   const custom = presence.activities.find(a => a.type === ActivityType.Custom);
-  if (!custom) return null;
+  if (!custom) return '';
   return [custom.name, custom.state, custom.details].filter(Boolean).join(' ').toLowerCase();
 }
 
 module.exports = {
   name: 'presenceUpdate',
   async execute(oldPresence, newPresence, client) {
+    // Ignorer si aucun changement de statut personnalisé
+    const oldText = getStatusText(oldPresence);
+    const newText = getStatusText(newPresence);
+    if (oldText === newText) return;
+
     const member = newPresence?.member ?? oldPresence?.member;
     if (!member || member.user.bot) return;
 
@@ -19,19 +25,16 @@ module.exports = {
     if (!guild) return;
 
     const config = getConfig(guild.id);
-    if (!config.pubRole) return;
+    if (!config.pubRole || !config.pubTriggers?.length) return;
 
     const role = guild.roles.cache.get(config.pubRole);
     if (!role) return;
 
-    const triggers = (config.pubTriggers || []).map(t => t.toLowerCase());
-    if (!triggers.length) return;
-
-    const statusText = getCustomStatus(newPresence) || '';
+    const triggers = config.pubTriggers.map(t => t.toLowerCase());
     const hasRole = member.roles.cache.has(role.id);
-    const matches = triggers.some(t => statusText.includes(t));
+    const matches = triggers.some(t => newText.includes(t));
 
-    // Attribuer le rôle si trigger trouvé et pas encore le rôle
+    // Attribuer si trigger détecté et pas encore le rôle
     if (matches && !hasRole) {
       await member.roles.add(role, 'AutoPub — trigger dans le statut').catch(() => {});
       await sendLog(client, guild.id, 'role_create', {
@@ -40,14 +43,14 @@ module.exports = {
         fields: [
           { name: 'Utilisateur', value: `${member.user.tag}`, inline: true },
           { name: 'Rôle', value: role.name, inline: true },
-          { name: 'Statut détecté', value: statusText.slice(0, 200) || '—', inline: false },
+          { name: 'Statut détecté', value: `\`${newText.slice(0, 200)}\``, inline: false },
         ],
         thumbnail: member.user.displayAvatarURL({ dynamic: true }),
       });
       return;
     }
 
-    // Retirer le rôle si plus de trigger et a le rôle
+    // Retirer si trigger disparu et a encore le rôle
     if (!matches && hasRole) {
       await member.roles.remove(role, 'AutoPub — trigger retiré du statut').catch(() => {});
       await sendLog(client, guild.id, 'role_delete', {
@@ -56,6 +59,7 @@ module.exports = {
         fields: [
           { name: 'Utilisateur', value: `${member.user.tag}`, inline: true },
           { name: 'Rôle', value: role.name, inline: true },
+          { name: 'Ancien statut', value: `\`${oldText.slice(0, 200) || '—'}\``, inline: false },
         ],
       });
     }
