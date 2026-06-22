@@ -21,6 +21,19 @@ module.exports = {
     if (interaction.isChatInputCommand()) {
       const command = client.commands.get(interaction.commandName);
       if (!command) return;
+
+      // Vérification stricte : seuls les Administrateurs peuvent utiliser les commandes
+      if (!interaction.member?.permissions?.has(PermissionFlagsBits.Administrator)) {
+        return interaction.reply({
+          embeds: [new EmbedBuilder()
+            .setColor(0xFF0000)
+            .setTitle('🚫 Accès refusé')
+            .setDescription('Tu dois avoir la permission **Administrateur** pour utiliser les commandes de ce bot.')
+            .setTimestamp()],
+          flags: 64,
+        });
+      }
+
       try {
         await command.execute(interaction, client);
       } catch (err) {
