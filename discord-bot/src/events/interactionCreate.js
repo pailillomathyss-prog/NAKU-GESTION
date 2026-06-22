@@ -7,6 +7,12 @@ const { getConfig, setTicket, getTickets, deleteTicket } = require('../utils/con
 const { sendLog } = require('../utils/logger');
 const { createCaptcha, verifyCaptcha } = require('../utils/captcha');
 
+// Groupes de rôles pour le panneau de sélection
+const ROLE_GROUPS = {
+  activite:  ['NUIT', 'JOURS'],
+  identite:  ['BOY', 'GIRL', 'EGIRL', 'TRANS'],
+};
+
 module.exports = {
   name: 'interactionCreate',
   async execute(interaction, client) {
@@ -29,6 +35,75 @@ module.exports = {
       return;
     }
 
+    // ── Select Menu : Sélection de rôles ────────────────────────────
+    if (interaction.isStringSelectMenu() && (interaction.customId === 'role_activite' || interaction.customId === 'role_identite')) {
+      await interaction.deferReply({ flags: 64 });
+
+      const config = getConfig(interaction.guild.id);
+      const rolePanel = config.rolePanel;
+
+      if (!rolePanel) {
+        return interaction.editReply({ content: '❌ Panneau de rôles non configuré. Lance `/setuproles`.' });
+      }
+
+      const groupKey = interaction.customId === 'role_activite' ? 'activite' : 'identite';
+      const groupKeys = ROLE_GROUPS[groupKey];
+      const selected = interaction.values[0]; // max 1 par groupe
+
+      // Retirer tous les rôles du groupe actuel du membre
+      const toRemove = groupKeys
+        .filter(k => rolePanel[k])
+        .map(k => rolePanel[k])
+        .filter(id => interaction.member.roles.cache.has(id));
+
+      for (const roleId of toRemove) {
+        await interaction.member.roles.remove(roleId).catch(() => {});
+      }
+
+      // Si "Aucun" ou pas de sélection → juste retirer
+      if (!selected || selected.startsWith('NONE_')) {
+        return interaction.editReply({
+          content: `✅ Rôles **${groupKey === 'activite' ? 'activité' : 'identité'}** retirés.`,
+        });
+      }
+
+      // Ajouter le nouveau rôle
+      const roleId = rolePanel[selected];
+      if (!roleId) {
+        return interaction.editReply({ content: '❌ Rôle introuvable dans la configuration.' });
+      }
+
+      const role = interaction.guild.roles.cache.get(roleId);
+      if (!role) {
+        return interaction.editReply({ content: '❌ Le rôle n\'existe plus sur le serveur.' });
+      }
+
+      await interaction.member.roles.add(role).catch(() => {});
+
+      // Calculer les rôles du panneau que le membre a maintenant
+      const allPanelRoleIds = Object.values(rolePanel);
+      const memberPanelRoles = interaction.member.roles.cache
+        .filter(r => allPanelRoleIds.includes(r.id))
+        .map(r => r.toString());
+
+      // Mettre à jour le membre (forcer le rechargement)
+      await interaction.member.fetch();
+      const updatedRoles = interaction.member.roles.cache
+        .filter(r => allPanelRoleIds.includes(r.id))
+        .map(r => r.toString());
+
+      return interaction.editReply({
+        embeds: [new EmbedBuilder()
+          .setColor(0x00FF88)
+          .setTitle('✅ Rôles mis à jour')
+          .addFields(
+            { name: '🎭 Rôle ajouté', value: role.toString(), inline: true },
+            { name: '📋 Tes rôles actuels', value: updatedRoles.length ? updatedRoles.join(', ') : 'Aucun', inline: true },
+          )
+          .setTimestamp()],
+      });
+    }
+
     // ── Bouton : Démarrer la vérification captcha ────────────────────
     if (interaction.isButton() && interaction.customId === 'start_verif') {
       const config = getConfig(interaction.guild.id);
@@ -41,7 +116,6 @@ module.exports = {
       }
 
       const code = createCaptcha(interaction.user.id);
-
       const captchaDisplay = formatCaptcha(code);
 
       const embed = new EmbedBuilder()
@@ -60,12 +134,10 @@ module.exports = {
         .setLabel('📝 Entrer le code')
         .setStyle(ButtonStyle.Primary);
 
-      const row = new ActionRowBuilder().addComponents(btn);
-
-      return interaction.reply({ embeds: [embed], components: [row], flags: 64 });
+      return interaction.reply({ embeds: [embed], components: [new ActionRowBuilder().addComponents(btn)], flags: 64 });
     }
 
-    // ── Bouton : Ouvrir le modal de saisie captcha ───────────────────
+    // ── Bouton : Ouvrir le modal captcha ─────────────────────────────
     if (interaction.isButton() && interaction.customId === 'enter_captcha') {
       const modal = new ModalBuilder()
         .setCustomId('captcha_modal')
@@ -73,7 +145,7 @@ module.exports = {
 
       const input = new TextInputBuilder()
         .setCustomId('captcha_input')
-        .setLabel('Code captcha (lettres et chiffres)')
+        .setLabel('Code captcha (6 caractères)')
         .setStyle(TextInputStyle.Short)
         .setMinLength(6)
         .setMaxLength(6)
@@ -93,31 +165,31 @@ module.exports = {
 
       if (!result.valid) {
         const msg = result.reason === 'expired'
-          ? '⏰ Ton code a expiré. Clique à nouveau sur **🔐 Se vérifier** pour en obtenir un nouveau.'
-          : '❌ Code incorrect. Clique à nouveau sur **🔐 Se vérifier** pour obtenir un nouveau code.';
+          ? '⏰ Ton code a expiré. Clique à nouveau sur **🔐 Se vérifier**.'
+          : '❌ Code incorrect. Clique à nouveau sur **🔐 Se vérifier** pour un nouveau code.';
         return interaction.editReply({ content: msg });
       }
 
       const config = getConfig(interaction.guild.id);
 
       if (!config.verifRole) {
-        return interaction.editReply({ content: '⚠️ Aucun rôle de vérification configuré. Contactez un administrateur.' });
+        return interaction.editReply({ content: '⚠️ Aucun rôle de vérification configuré.' });
       }
 
       const role = interaction.guild.roles.cache.get(config.verifRole);
       if (!role) {
-        return interaction.editReply({ content: '⚠️ Le rôle de vérification est introuvable. Contactez un administrateur.' });
+        return interaction.editReply({ content: '⚠️ Le rôle de vérification est introuvable.' });
       }
 
       try {
         await interaction.member.roles.add(role);
       } catch {
-        return interaction.editReply({ content: '❌ Impossible d\'attribuer le rôle. Vérifie que le bot a la permission **Gérer les rôles** et que son rôle est au-dessus du rôle de vérification.' });
+        return interaction.editReply({ content: '❌ Impossible d\'attribuer le rôle. Vérifie les permissions du bot.' });
       }
 
       await sendLog(client, interaction.guild.id, 'member_join', {
         title: '✅ Membre Vérifié',
-        description: `${interaction.user} a passé la vérification captcha et a reçu le rôle **${role.name}**.`,
+        description: `${interaction.user} a passé la vérification et reçu **${role.name}**.`,
         thumbnail: interaction.user.displayAvatarURL({ dynamic: true }),
         fields: [
           { name: 'Utilisateur', value: `${interaction.user.tag} (${interaction.user.id})`, inline: true },
@@ -165,7 +237,6 @@ module.exports = {
       setTicket(interaction.guild.id, channel.id, ticketData);
 
       const closeBtn = new ButtonBuilder().setCustomId('close_ticket').setLabel('🔒 Fermer le ticket').setStyle(ButtonStyle.Danger);
-      const row = new ActionRowBuilder().addComponents(closeBtn);
 
       const embed = new EmbedBuilder()
         .setColor(0x00AAFF)
@@ -174,7 +245,7 @@ module.exports = {
         .setFooter({ text: `Ticket #${ticketCount}` })
         .setTimestamp();
 
-      await channel.send({ content: `${interaction.user}${config.staffRole ? ` <@&${config.staffRole}>` : ''}`, embeds: [embed], components: [row] });
+      await channel.send({ content: `${interaction.user}${config.staffRole ? ` <@&${config.staffRole}>` : ''}`, embeds: [embed], components: [new ActionRowBuilder().addComponents(closeBtn)] });
 
       await sendLog(client, interaction.guild.id, 'ticket_open', {
         title: 'Ticket Ouvert',
@@ -206,14 +277,13 @@ module.exports = {
       await sendLog(client, interaction.guild.id, 'ticket_close', {
         title: 'Ticket Fermé',
         fields: [
-          { name: 'Fermé par', value: `${interaction.user} (${interaction.user.tag})`, inline: true },
-          { name: 'Propriétaire du ticket', value: `<@${ticket.userId}>`, inline: true },
+          { name: 'Fermé par', value: `${interaction.user.tag}`, inline: true },
+          { name: 'Propriétaire', value: `<@${ticket.userId}>`, inline: true },
         ],
       });
 
       deleteTicket(interaction.guild.id, interaction.channel.id);
-
-      await interaction.editReply({ content: '🔒 Fermeture du ticket dans 5 secondes...' });
+      await interaction.editReply({ content: '🔒 Fermeture dans 5 secondes...' });
       setTimeout(() => interaction.channel.delete().catch(() => {}), 5000);
     }
   },
