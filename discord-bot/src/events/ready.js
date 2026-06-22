@@ -10,7 +10,15 @@ module.exports = {
   async execute(client) {
     console.log(`\n🤖 Connecté : ${client.user.tag}`);
     console.log(`📡 Serveurs : ${client.guilds.cache.size}`);
-    client.user.setActivity('🛡️ NAKU Gestion | !help', { type: 3 });
+    client.user.setActivity('🛡️ PV•PROTECT | !help', { type: 3 });
+
+    // ── Nom du bot ────────────────────────────────────────────────────
+    if (client.user.username !== 'PV•PROTECT') {
+      await client.user.setUsername('PV•PROTECT').catch(err => {
+        console.warn('⚠️  Nom non mis à jour (cooldown 1h) :', err.message);
+      });
+      console.log('✅ Nom appliqué : PV•PROTECT');
+    }
 
     // ── Initialiser le système de persistance Discord ─────────────────────
     cloudSync.init(client);
