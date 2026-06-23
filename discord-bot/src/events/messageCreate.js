@@ -1,4 +1,4 @@
-const { EmbedBuilder, PermissionFlagsBits } = require('discord.js');
+const { EmbedBuilder, PermissionFlagsBits, ChannelType } = require('discord.js');
 const { getWarns, addWarn, getConfig, setConfig } = require('../utils/config');
 const { sendLog } = require('../utils/logger');
 const { checkLink, checkSpam, checkSticker } = require('../utils/automod');
@@ -12,22 +12,35 @@ const DURATIONS_MS = {
   '3j': 3 * 86400 * 1000, '7j': 7 * 86400 * 1000,
 };
 
-// Cooldown anti-spam pour éviter les doubles sanctions
 const sanctionCooldown = new Map();
+
+function isAdmin(member) {
+  return member.permissions.has(PermissionFlagsBits.Administrator);
+}
+function isMod(member) {
+  return member.permissions.has(PermissionFlagsBits.ModerateMembers);
+}
+function canBan(member) {
+  return member.permissions.has(PermissionFlagsBits.BanMembers);
+}
+function canKick(member) {
+  return member.permissions.has(PermissionFlagsBits.KickMembers);
+}
+function canManageMsg(member) {
+  return member.permissions.has(PermissionFlagsBits.ManageMessages);
+}
+function canManageCh(member) {
+  return member.permissions.has(PermissionFlagsBits.ManageChannels);
+}
 
 async function handleAutomod(message, client) {
   if (!message.guild || message.author.bot) return false;
-
-  // Ignorer les membres avec Manage Messages (modérateurs)
   if (message.member?.permissions.has(PermissionFlagsBits.ManageMessages)) return false;
 
   const userId = message.author.id;
   const now = Date.now();
-
-  // Éviter double sanction dans les 3 secondes
   if (sanctionCooldown.has(userId) && now - sanctionCooldown.get(userId) < 3000) return false;
 
-  // ── Anti-Sticker externe ─────────────────────────────────────────
   if (checkSticker(message)) {
     await message.delete().catch(() => {});
     const warn = await message.channel.send({ content: `${message.author} ❌ Stickers externes non autorisés.` });
@@ -35,15 +48,11 @@ async function handleAutomod(message, client) {
     sanctionCooldown.set(userId, now);
     await sendLog(client, message.guild.id, 'message_delete', {
       title: '🎭 AutoMod — Sticker Externe Supprimé',
-      fields: [
-        { name: 'Utilisateur', value: `${message.author.tag} (${userId})`, inline: true },
-        { name: 'Salon', value: message.channel.toString(), inline: true },
-      ],
+      fields: [{ name: 'Utilisateur', value: `${message.author.tag} (${userId})`, inline: true }, { name: 'Salon', value: message.channel.toString(), inline: true }],
     });
     return true;
   }
 
-  // ── Anti-Lien ────────────────────────────────────────────────────
   const linkResult = checkLink(message);
   if (linkResult) {
     await message.delete().catch(() => {});
@@ -52,38 +61,22 @@ async function handleAutomod(message, client) {
     setTimeout(() => warn.delete().catch(() => {}), 5000);
     await sendLog(client, message.guild.id, 'message_delete', {
       title: `🔗 AutoMod — Lien Bloqué (${linkResult.type})`,
-      fields: [
-        { name: 'Utilisateur', value: `${message.author.tag} (${userId})`, inline: true },
-        { name: 'Salon', value: message.channel.toString(), inline: true },
-        { name: 'Contenu', value: message.content.slice(0, 500), inline: false },
-      ],
+      fields: [{ name: 'Utilisateur', value: `${message.author.tag} (${userId})`, inline: true }, { name: 'Salon', value: message.channel.toString(), inline: true }, { name: 'Contenu', value: message.content.slice(0, 500), inline: false }],
     });
     return true;
   }
 
-  // ── Anti-Spam ────────────────────────────────────────────────────
   if (checkSpam(message)) {
     sanctionCooldown.set(userId, now);
-    // Supprimer les messages récents
     const recent = await message.channel.messages.fetch({ limit: 10 });
     const toDelete = recent.filter(m => m.author.id === userId && Date.now() - m.createdTimestamp < 5000);
     await message.channel.bulkDelete(toDelete, true).catch(() => {});
-
-    // Mute 10 minutes
-    if (message.member?.moderatable) {
-      await message.member.timeout(10 * 60 * 1000, 'AutoMod — Spam détecté').catch(() => {});
-    }
-
-    const warn = await message.channel.send({ content: `${message.author} ❌ **Spam détecté** — Tu as été mis en sourdine 10 minutes.` });
+    if (message.member?.moderatable) await message.member.timeout(10 * 60 * 1000, 'AutoMod — Spam').catch(() => {});
+    const warn = await message.channel.send({ content: `${message.author} ❌ **Spam détecté** — Mute 10 minutes.` });
     setTimeout(() => warn.delete().catch(() => {}), 8000);
-
     await sendLog(client, message.guild.id, 'mute', {
       title: '📨 AutoMod — Spam',
-      fields: [
-        { name: 'Utilisateur', value: `${message.author.tag} (${userId})`, inline: true },
-        { name: 'Salon', value: message.channel.toString(), inline: true },
-        { name: 'Action', value: 'Mute 10 minutes', inline: true },
-      ],
+      fields: [{ name: 'Utilisateur', value: `${message.author.tag} (${userId})`, inline: true }, { name: 'Action', value: 'Mute 10 minutes', inline: true }],
     });
     return true;
   }
@@ -94,7 +87,6 @@ async function handleAutomod(message, client) {
 module.exports = {
   name: 'messageCreate',
   async execute(message, client) {
-    // ── AutoMod (avant tout) ─────────────────────────────────────────
     if (!message.author?.bot && message.guild) {
       const blocked = await handleAutomod(message, client);
       if (blocked) return;
@@ -110,13 +102,39 @@ module.exports = {
     if (cmd === 'help') {
       const embed = new EmbedBuilder()
         .setColor(0x5865F2)
-        .setTitle('📖 NAKU — Commandes `!`')
+        .setTitle('📖 PV•PROTECT — Toutes les commandes `!`')
         .addFields(
-          { name: '🛡️ Modération', value: '`!ban @user [raison]`\n`!kick @user [raison]`\n`!mute @user <durée> [raison]`\n`!unmute @user`\n`!unban <id>`\n`!warn @user <raison>`\n`!warns @user`\n`!clear <1-100>`', inline: true },
-          { name: '⚙️ Config', value: '`!setlog #salon`\n`!setwelcome #salon`\n`!ping`', inline: true },
-          { name: '🔢 Durées !mute', value: '`10m` `30m` `1h` `6h` `12h` `1j` `3j` `7j`', inline: false },
+          { name: '🛡️ Modération', value: [
+            '`!ban @user [raison]`',
+            '`!kick @user [raison]`',
+            '`!mute @user <durée> [raison]`',
+            '`!unmute @user`',
+            '`!unban <id>`',
+            '`!warn @user <raison>`',
+            '`!warns @user`',
+            '`!delwarn @user <numéro>`',
+            '`!clear <1-100>`',
+            '`!lock [#salon] [raison]`',
+            '`!unlock [#salon] [raison]`',
+          ].join('\n'), inline: false },
+          { name: '📊 Informations', value: [
+            '`!serverinfo`',
+            '`!userinfo [@user]`',
+            '`!ping`',
+          ].join('\n'), inline: true },
+          { name: '⚙️ Configuration (Admin)', value: [
+            '`!setlog #salon`',
+            '`!setwelcome #salon`',
+            '`!setstaff @role`',
+            '`!setverif @role`',
+            '`!setautorole @role`',
+            '`!config`',
+          ].join('\n'), inline: true },
+          { name: '🔢 Durées pour `!mute`', value: '`10m` `30m` `1h` `6h` `12h` `1j` `3j` `7j`', inline: false },
+          { name: '💡 Commandes slash `/` disponibles', value: 'setrules · setupticket · setupverif · automod · syncperms · setuproles · setpub · serverinfo · lock · unlock', inline: false },
         )
-        .setFooter({ text: 'Commandes /slash également disponibles' });
+        .setFooter({ text: 'PV•PROTECT — Modération complète' })
+        .setTimestamp();
       return message.reply({ embeds: [embed] });
     }
 
@@ -125,50 +143,34 @@ module.exports = {
       return message.reply(`🏓 Pong ! Latence : **${client.ws.ping}ms**`);
     }
 
-    // ── !ban ─────────────────────────────────────────────────────────
+    // ──────────────────────────────────────────────────────────────────
+    //  MODÉRATION
+    // ──────────────────────────────────────────────────────────────────
+
     if (cmd === 'ban') {
-      if (!message.member.permissions.has(PermissionFlagsBits.BanMembers))
-        return message.reply('❌ Permission manquante : Bannir des membres.');
+      if (!canBan(message.member)) return message.reply('❌ Permission manquante : Bannir des membres.');
       const target = message.mentions.members.first();
       if (!target) return message.reply('❌ `!ban @user [raison]`');
       if (!target.bannable) return message.reply('❌ Je ne peux pas bannir ce membre.');
       const raison = args.slice(1).join(' ') || 'Aucune raison';
       await target.ban({ reason: raison });
-      await sendLog(client, message.guild.id, 'ban', {
-        title: 'Membre Banni',
-        fields: [
-          { name: 'Membre', value: `${target.user.tag} (${target.user.id})`, inline: true },
-          { name: 'Modérateur', value: message.author.tag, inline: true },
-          { name: 'Raison', value: raison, inline: false },
-        ],
-      });
+      await sendLog(client, message.guild.id, 'ban', { title: 'Membre Banni', thumbnail: target.user.displayAvatarURL({ dynamic: true }), fields: [{ name: 'Membre', value: `${target.user.tag} (${target.user.id})`, inline: true }, { name: 'Modérateur', value: message.author.tag, inline: true }, { name: 'Raison', value: raison, inline: false }] });
       return message.reply(`✅ **${target.user.tag}** banni. Raison : ${raison}`);
     }
 
-    // ── !kick ────────────────────────────────────────────────────────
     if (cmd === 'kick') {
-      if (!message.member.permissions.has(PermissionFlagsBits.KickMembers))
-        return message.reply('❌ Permission manquante : Expulser des membres.');
+      if (!canKick(message.member)) return message.reply('❌ Permission manquante : Expulser des membres.');
       const target = message.mentions.members.first();
       if (!target) return message.reply('❌ `!kick @user [raison]`');
       if (!target.kickable) return message.reply('❌ Je ne peux pas expulser ce membre.');
       const raison = args.slice(1).join(' ') || 'Aucune raison';
       await target.kick(raison);
-      await sendLog(client, message.guild.id, 'kick', {
-        title: 'Membre Expulsé',
-        fields: [
-          { name: 'Membre', value: `${target.user.tag} (${target.user.id})`, inline: true },
-          { name: 'Modérateur', value: message.author.tag, inline: true },
-          { name: 'Raison', value: raison, inline: false },
-        ],
-      });
+      await sendLog(client, message.guild.id, 'kick', { title: 'Membre Expulsé', thumbnail: target.user.displayAvatarURL({ dynamic: true }), fields: [{ name: 'Membre', value: `${target.user.tag}`, inline: true }, { name: 'Modérateur', value: message.author.tag, inline: true }, { name: 'Raison', value: raison, inline: false }] });
       return message.reply(`✅ **${target.user.tag}** expulsé. Raison : ${raison}`);
     }
 
-    // ── !mute ────────────────────────────────────────────────────────
     if (cmd === 'mute') {
-      if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers))
-        return message.reply('❌ Permission manquante : Modérer les membres.');
+      if (!isMod(message.member)) return message.reply('❌ Permission manquante : Modérer les membres.');
       const target = message.mentions.members.first();
       if (!target) return message.reply('❌ `!mute @user <durée> [raison]`');
       const dureeKey = args[1];
@@ -177,66 +179,47 @@ module.exports = {
       if (!target.moderatable) return message.reply('❌ Je ne peux pas mute ce membre.');
       const raison = args.slice(2).join(' ') || 'Aucune raison';
       await target.timeout(ms, raison);
-      await sendLog(client, message.guild.id, 'mute', {
-        title: 'Membre Mute',
-        fields: [
-          { name: 'Membre', value: `${target.user.tag}`, inline: true },
-          { name: 'Durée', value: dureeKey, inline: true },
-          { name: 'Raison', value: raison, inline: false },
-        ],
-      });
+      await sendLog(client, message.guild.id, 'mute', { title: 'Membre Mute', thumbnail: target.user.displayAvatarURL({ dynamic: true }), fields: [{ name: 'Membre', value: target.user.tag, inline: true }, { name: 'Durée', value: dureeKey, inline: true }, { name: 'Modérateur', value: message.author.tag, inline: true }, { name: 'Raison', value: raison, inline: false }] });
       return message.reply(`✅ **${target.user.tag}** mute **${dureeKey}**. Raison : ${raison}`);
     }
 
-    // ── !unmute ──────────────────────────────────────────────────────
     if (cmd === 'unmute') {
-      if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers))
-        return message.reply('❌ Permission manquante.');
+      if (!isMod(message.member)) return message.reply('❌ Permission manquante.');
       const target = message.mentions.members.first();
       if (!target) return message.reply('❌ `!unmute @user`');
       if (!target.isCommunicationDisabled()) return message.reply('❌ Ce membre n\'est pas mute.');
       await target.timeout(null);
+      await sendLog(client, message.guild.id, 'unmute', { title: 'Membre Unmute', thumbnail: target.user.displayAvatarURL({ dynamic: true }), fields: [{ name: 'Membre', value: target.user.tag, inline: true }, { name: 'Modérateur', value: message.author.tag, inline: true }] });
       return message.reply(`✅ **${target.user.tag}** unmute.`);
     }
 
-    // ── !unban ───────────────────────────────────────────────────────
     if (cmd === 'unban') {
-      if (!message.member.permissions.has(PermissionFlagsBits.BanMembers))
-        return message.reply('❌ Permission manquante.');
+      if (!canBan(message.member)) return message.reply('❌ Permission manquante.');
       const userId = args[0];
       if (!userId) return message.reply('❌ `!unban <id>`');
       try {
+        const ban = await message.guild.bans.fetch(userId).catch(() => null);
         await message.guild.members.unban(userId);
+        await sendLog(client, message.guild.id, 'unban', { title: 'Membre Débanni', fields: [{ name: 'ID', value: userId, inline: true }, { name: 'Modérateur', value: message.author.tag, inline: true }] });
         return message.reply(`✅ Utilisateur \`${userId}\` débanni.`);
       } catch {
         return message.reply('❌ ID invalide ou utilisateur non banni.');
       }
     }
 
-    // ── !warn ────────────────────────────────────────────────────────
     if (cmd === 'warn') {
-      if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers))
-        return message.reply('❌ Permission manquante.');
+      if (!isMod(message.member)) return message.reply('❌ Permission manquante.');
       const target = message.mentions.users.first();
       if (!target) return message.reply('❌ `!warn @user <raison>`');
       const raison = args.slice(1).join(' ');
       if (!raison) return message.reply('❌ Fournis une raison.');
       addWarn(message.guild.id, target.id, { raison, modId: message.author.id, modTag: message.author.tag, date: new Date().toISOString() });
-      await sendLog(client, message.guild.id, 'warn', {
-        title: 'Membre Averti',
-        fields: [
-          { name: 'Membre', value: target.tag, inline: true },
-          { name: 'Modérateur', value: message.author.tag, inline: true },
-          { name: 'Raison', value: raison, inline: false },
-        ],
-      });
+      await sendLog(client, message.guild.id, 'warn', { title: 'Membre Averti', fields: [{ name: 'Membre', value: target.tag, inline: true }, { name: 'Modérateur', value: message.author.tag, inline: true }, { name: 'Raison', value: raison, inline: false }] });
       return message.reply(`⚠️ **${target.tag}** averti. Raison : ${raison}`);
     }
 
-    // ── !warns ───────────────────────────────────────────────────────
     if (cmd === 'warns') {
-      if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers))
-        return message.reply('❌ Permission manquante.');
+      if (!isMod(message.member)) return message.reply('❌ Permission manquante.');
       const target = message.mentions.users.first();
       if (!target) return message.reply('❌ `!warns @user`');
       const warns = getWarns(message.guild.id, target.id);
@@ -249,10 +232,18 @@ module.exports = {
       return message.reply({ embeds: [embed] });
     }
 
-    // ── !clear ───────────────────────────────────────────────────────
+    if (cmd === 'delwarn') {
+      if (!isMod(message.member)) return message.reply('❌ Permission manquante.');
+      const target = message.mentions.users.first();
+      const num = parseInt(args[1]);
+      if (!target || isNaN(num)) return message.reply('❌ `!delwarn @user <numéro>`');
+      const { removeWarn } = require('../utils/config');
+      const ok = removeWarn(message.guild.id, target.id, num - 1);
+      return message.reply(ok ? `✅ Avertissement **#${num}** de **${target.tag}** supprimé.` : '❌ Avertissement introuvable.');
+    }
+
     if (cmd === 'clear') {
-      if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages))
-        return message.reply('❌ Permission manquante.');
+      if (!canManageMsg(message.member)) return message.reply('❌ Permission manquante.');
       const nb = parseInt(args[0]);
       if (isNaN(nb) || nb < 1 || nb > 100) return message.reply('❌ Nombre invalide (1-100).');
       await message.delete().catch(() => {});
@@ -261,26 +252,149 @@ module.exports = {
       const deleted = await message.channel.bulkDelete(recent, true);
       const confirm = await message.channel.send(`✅ ${deleted.size} message(s) supprimé(s).`);
       setTimeout(() => confirm.delete().catch(() => {}), 3000);
+      return;
     }
 
-    // ── !setlog ──────────────────────────────────────────────────────
+    if (cmd === 'lock') {
+      if (!canManageCh(message.member)) return message.reply('❌ Permission manquante : Gérer les salons.');
+      const channel = message.mentions.channels.first() || message.channel;
+      const raison = args.slice(message.mentions.channels.size ? 1 : 0).join(' ') || 'Aucune raison';
+      await channel.permissionOverwrites.edit(message.guild.roles.everyone, { SendMessages: false }).catch(() => {});
+      const embed = new EmbedBuilder().setColor(0xFF2222).setTitle('🔒 Salon Verrouillé').setDescription(`Verrouillé par ${message.author}.`).addFields({ name: 'Raison', value: raison }).setTimestamp();
+      await channel.send({ embeds: [embed] }).catch(() => {});
+      await sendLog(client, message.guild.id, 'channel_update', { title: '🔒 Salon Verrouillé', fields: [{ name: 'Salon', value: channel.toString(), inline: true }, { name: 'Par', value: message.author.tag, inline: true }, { name: 'Raison', value: raison, inline: false }] });
+      if (channel.id !== message.channel.id) message.reply(`✅ ${channel} verrouillé.`);
+      return;
+    }
+
+    if (cmd === 'unlock') {
+      if (!canManageCh(message.member)) return message.reply('❌ Permission manquante : Gérer les salons.');
+      const channel = message.mentions.channels.first() || message.channel;
+      const raison = args.slice(message.mentions.channels.size ? 1 : 0).join(' ') || 'Aucune raison';
+      await channel.permissionOverwrites.edit(message.guild.roles.everyone, { SendMessages: null }).catch(() => {});
+      const embed = new EmbedBuilder().setColor(0x00FF88).setTitle('🔓 Salon Déverrouillé').setDescription(`Déverrouillé par ${message.author}.`).addFields({ name: 'Raison', value: raison }).setTimestamp();
+      await channel.send({ embeds: [embed] }).catch(() => {});
+      await sendLog(client, message.guild.id, 'channel_update', { title: '🔓 Salon Déverrouillé', fields: [{ name: 'Salon', value: channel.toString(), inline: true }, { name: 'Par', value: message.author.tag, inline: true }, { name: 'Raison', value: raison, inline: false }] });
+      if (channel.id !== message.channel.id) message.reply(`✅ ${channel} déverrouillé.`);
+      return;
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    //  INFORMATIONS
+    // ──────────────────────────────────────────────────────────────────
+
+    if (cmd === 'serverinfo') {
+      await message.guild.fetch();
+      const guild = message.guild;
+      const textCh  = guild.channels.cache.filter(c => c.type === ChannelType.GuildText).size;
+      const voiceCh = guild.channels.cache.filter(c => c.type === ChannelType.GuildVoice).size;
+      const bots    = guild.members.cache.filter(m => m.user.bot).size;
+      const owner   = await guild.fetchOwner().catch(() => null);
+
+      const embed = new EmbedBuilder()
+        .setColor(0x5865F2)
+        .setTitle(`📊 ${guild.name}`)
+        .setThumbnail(guild.iconURL({ dynamic: true, size: 256 }))
+        .addFields(
+          { name: '👑 Propriétaire', value: owner ? owner.user.tag : '—', inline: true },
+          { name: '🆔 ID', value: guild.id, inline: true },
+          { name: '📅 Créé le', value: `<t:${Math.floor(guild.createdTimestamp / 1000)}:D>`, inline: true },
+          { name: '👥 Membres', value: `Total : **${guild.memberCount}** | Bots : **${bots}**`, inline: false },
+          { name: '💬 Salons', value: `Texte : **${textCh}** | Vocal : **${voiceCh}**`, inline: true },
+          { name: '🏷️ Rôles', value: `**${guild.roles.cache.size - 1}**`, inline: true },
+          { name: '🚀 Boosts', value: `**${guild.premiumSubscriptionCount || 0}** (Tier ${guild.premiumTier})`, inline: true },
+        )
+        .setTimestamp();
+      return message.reply({ embeds: [embed] });
+    }
+
+    if (cmd === 'userinfo') {
+      const target = message.mentions.members.first() || message.member;
+      const user = target.user;
+      const roles = target.roles.cache.filter(r => r.id !== message.guild.id).map(r => r.toString()).join(', ') || 'Aucun';
+      const warns = getWarns(message.guild.id, user.id);
+
+      const embed = new EmbedBuilder()
+        .setColor(0x5865F2)
+        .setTitle(`👤 ${user.tag}`)
+        .setThumbnail(user.displayAvatarURL({ dynamic: true, size: 256 }))
+        .addFields(
+          { name: '🆔 ID', value: user.id, inline: true },
+          { name: '🤖 Bot', value: user.bot ? 'Oui' : 'Non', inline: true },
+          { name: '📅 Compte créé', value: `<t:${Math.floor(user.createdTimestamp / 1000)}:D>`, inline: true },
+          { name: '📥 A rejoint', value: `<t:${Math.floor(target.joinedTimestamp / 1000)}:D>`, inline: true },
+          { name: '⚠️ Avertissements', value: `${warns.length}`, inline: true },
+          { name: '🏷️ Pseudo', value: target.nickname || 'Aucun', inline: true },
+          { name: `🎭 Rôles (${target.roles.cache.size - 1})`, value: roles.slice(0, 1024), inline: false },
+        )
+        .setTimestamp();
+      return message.reply({ embeds: [embed] });
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    //  CONFIG (Admin)
+    // ──────────────────────────────────────────────────────────────────
+
     if (cmd === 'setlog') {
-      if (!message.member.permissions.has(PermissionFlagsBits.Administrator))
-        return message.reply('❌ Administrateur requis.');
+      if (!isAdmin(message.member)) return message.reply('❌ Administrateur requis.');
       const channel = message.mentions.channels.first();
       if (!channel) return message.reply('❌ `!setlog #salon`');
       setConfig(message.guild.id, 'logChannel', channel.id);
-      return message.reply(`✅ Logs → ${channel}`);
+      return message.reply(`✅ Salon de logs → ${channel}`);
     }
 
-    // ── !setwelcome ──────────────────────────────────────────────────
     if (cmd === 'setwelcome') {
-      if (!message.member.permissions.has(PermissionFlagsBits.Administrator))
-        return message.reply('❌ Administrateur requis.');
+      if (!isAdmin(message.member)) return message.reply('❌ Administrateur requis.');
       const channel = message.mentions.channels.first();
       if (!channel) return message.reply('❌ `!setwelcome #salon`');
       setConfig(message.guild.id, 'welcomeChannel', channel.id);
-      return message.reply(`✅ Bienvenue → ${channel}`);
+      return message.reply(`✅ Salon de bienvenue → ${channel}`);
+    }
+
+    if (cmd === 'setstaff') {
+      if (!isAdmin(message.member)) return message.reply('❌ Administrateur requis.');
+      const role = message.mentions.roles.first();
+      if (!role) return message.reply('❌ `!setstaff @role`');
+      setConfig(message.guild.id, 'staffRole', role.id);
+      return message.reply(`✅ Rôle staff → ${role}`);
+    }
+
+    if (cmd === 'setverif') {
+      if (!isAdmin(message.member)) return message.reply('❌ Administrateur requis.');
+      const role = message.mentions.roles.first();
+      if (!role) return message.reply('❌ `!setverif @role`');
+      setConfig(message.guild.id, 'verifRole', role.id);
+      return message.reply(`✅ Rôle vérification → ${role}`);
+    }
+
+    if (cmd === 'setautorole') {
+      if (!isAdmin(message.member)) return message.reply('❌ Administrateur requis.');
+      const role = message.mentions.roles.first();
+      if (!role) return message.reply('❌ `!setautorole @role`');
+      setConfig(message.guild.id, 'autoRole', role.id);
+      return message.reply(`✅ Auto-rôle à l'arrivée → ${role}`);
+    }
+
+    if (cmd === 'config') {
+      if (!isAdmin(message.member)) return message.reply('❌ Administrateur requis.');
+      const config = getConfig(message.guild.id);
+      const f = (id) => id ? `<#${id}>` : '❌';
+      const r = (id) => id ? `<@&${id}>` : '❌';
+      const embed = new EmbedBuilder()
+        .setColor(0x5865F2)
+        .setTitle('⚙️ Configuration actuelle')
+        .addFields(
+          { name: '📋 Logs', value: f(config.logChannel), inline: true },
+          { name: '👋 Bienvenue', value: f(config.welcomeChannel), inline: true },
+          { name: '🎫 Tickets', value: config.ticketCategory ? `<#${config.ticketCategory}>` : '❌', inline: true },
+          { name: '🛡️ Staff', value: r(config.staffRole), inline: true },
+          { name: '✅ Vérif', value: r(config.verifRole), inline: true },
+          { name: '🎭 Auto-rôle', value: r(config.autoRole), inline: true },
+          { name: '📢 PUB Role', value: r(config.pubRole), inline: true },
+          { name: '📢 PUB Triggers', value: config.pubTriggers?.join(', ') || '❌', inline: true },
+        )
+        .setTimestamp();
+      return message.reply({ embeds: [embed] });
     }
   },
 };
