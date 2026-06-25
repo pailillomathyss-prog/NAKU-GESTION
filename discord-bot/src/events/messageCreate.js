@@ -2,6 +2,11 @@ const { EmbedBuilder, PermissionFlagsBits, ChannelType } = require('discord.js')
 const { getWarns, addWarn, getConfig, setConfig } = require('../utils/config');
 const { sendLog } = require('../utils/logger');
 const { checkLink, checkSpam, checkSticker } = require('../utils/automod');
+const fs = require('fs');
+const path = require('path');
+
+// Confirmations en attente pour !delete
+const deleteConfirmPending = new Map();
 
 const PREFIX = '!';
 
@@ -395,6 +400,98 @@ module.exports = {
         )
         .setTimestamp();
       return message.reply({ embeds: [embed] });
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    //  !delete — Réinitialisation complète
+    // ──────────────────────────────────────────────────────────────────
+    if (cmd === 'delete') {
+      if (!isAdmin(message.member)) return message.reply('❌ Administrateur requis.');
+
+      const confirmKey = `${message.guild.id}-${message.author.id}`;
+      const confirmed = args[0]?.toUpperCase() === 'CONFIRMER';
+
+      // Étape 1 : afficher l'avertissement
+      if (!confirmed) {
+        deleteConfirmPending.set(confirmKey, Date.now());
+        // Expirer la confirmation après 30s
+        setTimeout(() => deleteConfirmPending.delete(confirmKey), 30_000);
+
+        const config = getConfig(message.guild.id);
+        const welcomeId = config.welcomeChannel;
+
+        return message.reply({
+          embeds: [new EmbedBuilder()
+            .setColor(0xFF0000)
+            .setTitle('⚠️ ATTENTION — Action irréversible')
+            .setDescription([
+              '**Cette commande va :**',
+              '> 🗑️ Supprimer **toute la configuration du bot** (logs, tickets, automod, rôles, règles...)',
+              `> 🗂️ Supprimer **tous les salons** sauf ${welcomeId ? `<#${welcomeId}>` : 'le salon de bienvenue (non configuré)'}`,
+              '',
+              '**Pour confirmer, tape dans les 30 secondes :**',
+              '```!delete CONFIRMER```',
+            ].join('\n'))
+            .setTimestamp()],
+        });
+      }
+
+      // Étape 2 : vérifier que la confirmation a bien été demandée
+      if (!deleteConfirmPending.has(confirmKey)) {
+        return message.reply('❌ Tape d\'abord `!delete` sans argument pour voir l\'avertissement.');
+      }
+      deleteConfirmPending.delete(confirmKey);
+
+      await message.reply('🔄 Réinitialisation en cours...');
+
+      const config = getConfig(message.guild.id);
+      const welcomeId = config.welcomeChannel;
+
+      // ── Supprimer tous les salons sauf le salon de bienvenue ──────────
+      let deletedChannels = 0;
+      const channels = message.guild.channels.cache.filter(c =>
+        c.id !== welcomeId &&
+        c.id !== message.channel.id // garder le salon actuel pour la réponse
+      );
+
+      for (const [, channel] of channels) {
+        await channel.delete('!delete — réinitialisation complète').catch(() => {});
+        deletedChannels++;
+      }
+
+      // ── Effacer toute la config JSON du bot pour ce serveur ──────────
+      const dataDir = path.join(__dirname, '..', '..', 'data');
+      for (const fileName of ['config.json', 'tickets.json', 'warns.json']) {
+        const filePath = path.join(dataDir, fileName);
+        if (fs.existsSync(filePath)) {
+          try {
+            const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+            delete data[message.guild.id];
+            fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf8');
+          } catch {}
+        }
+      }
+
+      // ── Résumé ────────────────────────────────────────────────────────
+      const summary = new EmbedBuilder()
+        .setColor(0x00FF88)
+        .setTitle('✅ Réinitialisation terminée')
+        .addFields(
+          { name: '🗂️ Salons supprimés', value: `${deletedChannels}`, inline: true },
+          { name: '⚙️ Config effacée', value: 'Oui (config, tickets, warns)', inline: true },
+          { name: '👋 Salon conservé', value: welcomeId ? `<#${welcomeId}>` : 'Aucun (non configuré)', inline: false },
+          { name: '🔄 Prochaine étape', value: 'Reconfigure le bot avec `/setlog`, `/setrules`, `/setupticket`, etc.', inline: false },
+        )
+        .setTimestamp();
+
+      await message.channel.send({ embeds: [summary] }).catch(() => {});
+
+      // Supprimer aussi le salon actuel (dernier) après le message
+      setTimeout(() => {
+        if (message.channel.id !== welcomeId) {
+          message.channel.delete('!delete — dernier salon').catch(() => {});
+        }
+      }, 3000);
     }
   },
 };
