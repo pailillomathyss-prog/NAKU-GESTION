@@ -5,9 +5,6 @@ const { checkLink, checkSpam, checkSticker } = require('../utils/automod');
 const fs = require('fs');
 const path = require('path');
 
-// Confirmations en attente pour !delete
-const deleteConfirmPending = new Map();
-
 const PREFIX = '!';
 
 const DURATIONS_MS = {
@@ -407,40 +404,6 @@ module.exports = {
     // ──────────────────────────────────────────────────────────────────
     if (cmd === 'delete') {
       if (!isAdmin(message.member)) return message.reply('❌ Administrateur requis.');
-
-      const confirmKey = `${message.guild.id}-${message.author.id}`;
-      const confirmed = args[0]?.toUpperCase() === 'CONFIRMER';
-
-      // Étape 1 : afficher l'avertissement
-      if (!confirmed) {
-        deleteConfirmPending.set(confirmKey, Date.now());
-        // Expirer la confirmation après 30s
-        setTimeout(() => deleteConfirmPending.delete(confirmKey), 30_000);
-
-        const config = getConfig(message.guild.id);
-        const welcomeId = config.welcomeChannel;
-
-        return message.reply({
-          embeds: [new EmbedBuilder()
-            .setColor(0xFF0000)
-            .setTitle('⚠️ ATTENTION — Action irréversible')
-            .setDescription([
-              '**Cette commande va :**',
-              '> 🗑️ Supprimer **toute la configuration du bot** (logs, tickets, automod, rôles, règles...)',
-              `> 🗂️ Supprimer **tous les salons** sauf ${welcomeId ? `<#${welcomeId}>` : 'le salon de bienvenue (non configuré)'}`,
-              '',
-              '**Pour confirmer, tape dans les 30 secondes :**',
-              '```!delete CONFIRMER```',
-            ].join('\n'))
-            .setTimestamp()],
-        });
-      }
-
-      // Étape 2 : vérifier que la confirmation a bien été demandée
-      if (!deleteConfirmPending.has(confirmKey)) {
-        return message.reply('❌ Tape d\'abord `!delete` sans argument pour voir l\'avertissement.');
-      }
-      deleteConfirmPending.delete(confirmKey);
 
       await message.reply('🔄 Réinitialisation en cours...');
 
