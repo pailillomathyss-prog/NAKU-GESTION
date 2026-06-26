@@ -3,9 +3,23 @@ const {
   EmbedBuilder, ButtonBuilder, ButtonStyle, ActionRowBuilder,
   ModalBuilder, TextInputBuilder, TextInputStyle,
 } = require('discord.js');
+const fs = require('fs');
+const path = require('path');
 const { getConfig, setTicket, getTickets, deleteTicket } = require('../utils/config');
 const { sendLog } = require('../utils/logger');
 const { createCaptcha, verifyCaptcha } = require('../utils/captcha');
+
+// ── Smash or Pass — stockage des votes ──────────────────────────────────────
+const sopPath = path.join(__dirname, '../../data/smashvotes.json');
+
+function readSopVotes() {
+  if (!fs.existsSync(sopPath)) return {};
+  try { return JSON.parse(fs.readFileSync(sopPath, 'utf8')); } catch { return {}; }
+}
+
+function writeSopVotes(data) {
+  fs.writeFileSync(sopPath, JSON.stringify(data, null, 2), 'utf8');
+}
 
 // Groupes de rôles pour le panneau de sélection
 const ROLE_GROUPS = {
@@ -48,6 +62,70 @@ module.exports = {
       return;
     }
 
+    // ── Boutons : Vote Smash or Pass ────────────────────────────────
+    if (interaction.isButton() && (interaction.customId.startsWith('sop_smash_') || interaction.customId.startsWith('sop_pass_'))) {
+      await interaction.deferReply({ flags: 64 });
+
+      const parts = interaction.customId.split('_');
+      const choice = parts[1]; // 'smash' ou 'pass'
+      const messageId = parts[2];
+
+      const votes = readSopVotes();
+      if (!votes[messageId]) votes[messageId] = { smash: [], pass: [] };
+
+      const entry = votes[messageId];
+      const userId = interaction.user.id;
+
+      const alreadySmash = entry.smash.includes(userId);
+      const alreadyPass  = entry.pass.includes(userId);
+
+      // Retirer le vote précédent si l'utilisateur change d'avis
+      entry.smash = entry.smash.filter(id => id !== userId);
+      entry.pass  = entry.pass.filter(id => id !== userId);
+
+      let replyText;
+
+      if (choice === 'smash') {
+        if (alreadySmash) {
+          // Déjà voté smash → annuler le vote
+          replyText = '↩️ Ton vote **Smash** a été retiré.';
+        } else {
+          entry.smash.push(userId);
+          replyText = alreadyPass
+            ? '🔄 Tu es passé de **Pass** à **💚 Smash** !'
+            : '💚 Tu as voté **Smash** !';
+        }
+      } else {
+        if (alreadyPass) {
+          // Déjà voté pass → annuler le vote
+          replyText = '↩️ Ton vote **Pass** a été retiré.';
+        } else {
+          entry.pass.push(userId);
+          replyText = alreadySmash
+            ? '🔄 Tu es passé de **Smash** à **❌ Pass** !'
+            : '❌ Tu as voté **Pass** !';
+        }
+      }
+
+      writeSopVotes(votes);
+
+      // Mettre à jour l'embed du message original
+      const originalMessage = await interaction.message.fetch().catch(() => null);
+      if (originalMessage) {
+        const oldEmbed = originalMessage.embeds[0];
+        if (oldEmbed) {
+          const updatedEmbed = EmbedBuilder.from(oldEmbed)
+            .setFields(
+              { name: '💚 Smash', value: `**${entry.smash.length}** vote(s)`, inline: true },
+              { name: '❌ Pass',  value: `**${entry.pass.length}** vote(s)`,  inline: true },
+            );
+          await originalMessage.edit({ embeds: [updatedEmbed] }).catch(() => {});
+        }
+      }
+
+      return interaction.editReply({ content: replyText });
+    }
+
     // ── Select Menu : Sélection de rôles ────────────────────────────
     if (interaction.isStringSelectMenu() && (interaction.customId === 'role_activite' || interaction.customId === 'role_identite')) {
       await interaction.deferReply({ flags: 64 });
@@ -61,9 +139,8 @@ module.exports = {
 
       const groupKey = interaction.customId === 'role_activite' ? 'activite' : 'identite';
       const groupKeys = ROLE_GROUPS[groupKey];
-      const selected = interaction.values[0]; // max 1 par groupe
+      const selected = interaction.values[0];
 
-      // Retirer tous les rôles du groupe actuel du membre
       const toRemove = groupKeys
         .filter(k => rolePanel[k])
         .map(k => rolePanel[k])
@@ -73,14 +150,12 @@ module.exports = {
         await interaction.member.roles.remove(roleId).catch(() => {});
       }
 
-      // Si "Aucun" ou pas de sélection → juste retirer
       if (!selected || selected.startsWith('NONE_')) {
         return interaction.editReply({
           content: `✅ Rôles **${groupKey === 'activite' ? 'activité' : 'identité'}** retirés.`,
         });
       }
 
-      // Ajouter le nouveau rôle
       const roleId = rolePanel[selected];
       if (!roleId) {
         return interaction.editReply({ content: '❌ Rôle introuvable dans la configuration.' });
@@ -92,15 +167,9 @@ module.exports = {
       }
 
       await interaction.member.roles.add(role).catch(() => {});
-
-      // Calculer les rôles du panneau que le membre a maintenant
-      const allPanelRoleIds = Object.values(rolePanel);
-      const memberPanelRoles = interaction.member.roles.cache
-        .filter(r => allPanelRoleIds.includes(r.id))
-        .map(r => r.toString());
-
-      // Mettre à jour le membre (forcer le rechargement)
       await interaction.member.fetch();
+
+      const allPanelRoleIds = Object.values(rolePanel);
       const updatedRoles = interaction.member.roles.cache
         .filter(r => allPanelRoleIds.includes(r.id))
         .map(r => r.toString());
