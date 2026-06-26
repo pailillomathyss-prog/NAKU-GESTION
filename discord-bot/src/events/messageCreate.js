@@ -16,24 +16,12 @@ const DURATIONS_MS = {
 
 const sanctionCooldown = new Map();
 
-function isAdmin(member) {
-  return member.permissions.has(PermissionFlagsBits.Administrator);
-}
-function isMod(member) {
-  return member.permissions.has(PermissionFlagsBits.ModerateMembers);
-}
-function canBan(member) {
-  return member.permissions.has(PermissionFlagsBits.BanMembers);
-}
-function canKick(member) {
-  return member.permissions.has(PermissionFlagsBits.KickMembers);
-}
-function canManageMsg(member) {
-  return member.permissions.has(PermissionFlagsBits.ManageMessages);
-}
-function canManageCh(member) {
-  return member.permissions.has(PermissionFlagsBits.ManageChannels);
-}
+function isAdmin(member)    { return member.permissions.has(PermissionFlagsBits.Administrator); }
+function isMod(member)      { return member.permissions.has(PermissionFlagsBits.ModerateMembers); }
+function canBan(member)     { return member.permissions.has(PermissionFlagsBits.BanMembers); }
+function canKick(member)    { return member.permissions.has(PermissionFlagsBits.KickMembers); }
+function canManageMsg(member) { return member.permissions.has(PermissionFlagsBits.ManageMessages); }
+function canManageCh(member)  { return member.permissions.has(PermissionFlagsBits.ManageChannels); }
 
 async function handleAutomod(message, client) {
   if (!message.guild || message.author.bot) return false;
@@ -89,9 +77,29 @@ async function handleAutomod(message, client) {
 module.exports = {
   name: 'messageCreate',
   async execute(message, client) {
+
+    // ── AutoMod ──────────────────────────────────────────────────────
     if (!message.author?.bot && message.guild) {
       const blocked = await handleAutomod(message, client);
       if (blocked) return;
+    }
+
+    // ── Smash or Pass — Salon de sélection : photos uniquement ───────
+    // Si le message est dans le salon de sélection configuré et n'est pas une image → suppression automatique
+    if (!message.author?.bot && message.guild) {
+      const config = getConfig(message.guild.id);
+      if (config.smashSelectionChannel && message.channel.id === config.smashSelectionChannel) {
+        const hasImage = message.attachments.some(a => a.contentType && a.contentType.startsWith('image/'));
+        if (!hasImage) {
+          await message.delete().catch(() => {});
+          const warn = await message.channel.send({
+            content: `${message.author} ❌ Ce salon est réservé aux **photos uniquement** ! Clique sur le bouton **📸 Soumettre ma photo** pour participer.`,
+          });
+          setTimeout(() => warn.delete().catch(() => {}), 5000);
+        }
+        // Image ou message supprimé → ne pas continuer vers les commandes prefix
+        return;
+      }
     }
 
     if (message.author.bot || !message.guild) return;
@@ -140,14 +148,9 @@ module.exports = {
       return message.reply({ embeds: [embed] });
     }
 
-    // ── !ping ────────────────────────────────────────────────────────
     if (cmd === 'ping') {
       return message.reply(`🏓 Pong ! Latence : **${client.ws.ping}ms**`);
     }
-
-    // ──────────────────────────────────────────────────────────────────
-    //  MODÉRATION
-    // ──────────────────────────────────────────────────────────────────
 
     if (cmd === 'ban') {
       if (!canBan(message.member)) return message.reply('❌ Permission manquante : Bannir des membres.');
@@ -200,7 +203,6 @@ module.exports = {
       const userId = args[0];
       if (!userId) return message.reply('❌ `!unban <id>`');
       try {
-        const ban = await message.guild.bans.fetch(userId).catch(() => null);
         await message.guild.members.unban(userId);
         await sendLog(client, message.guild.id, 'unban', { title: 'Membre Débanni', fields: [{ name: 'ID', value: userId, inline: true }, { name: 'Modérateur', value: message.author.tag, inline: true }] });
         return message.reply(`✅ Utilisateur \`${userId}\` débanni.`);
@@ -281,10 +283,6 @@ module.exports = {
       return;
     }
 
-    // ──────────────────────────────────────────────────────────────────
-    //  INFORMATIONS
-    // ──────────────────────────────────────────────────────────────────
-
     if (cmd === 'serverinfo') {
       await message.guild.fetch();
       const guild = message.guild;
@@ -292,7 +290,6 @@ module.exports = {
       const voiceCh = guild.channels.cache.filter(c => c.type === ChannelType.GuildVoice).size;
       const bots    = guild.members.cache.filter(m => m.user.bot).size;
       const owner   = await guild.fetchOwner().catch(() => null);
-
       const embed = new EmbedBuilder()
         .setColor(0x5865F2)
         .setTitle(`📊 ${guild.name}`)
@@ -315,7 +312,6 @@ module.exports = {
       const user = target.user;
       const roles = target.roles.cache.filter(r => r.id !== message.guild.id).map(r => r.toString()).join(', ') || 'Aucun';
       const warns = getWarns(message.guild.id, user.id);
-
       const embed = new EmbedBuilder()
         .setColor(0x5865F2)
         .setTitle(`👤 ${user.tag}`)
@@ -332,10 +328,6 @@ module.exports = {
         .setTimestamp();
       return message.reply({ embeds: [embed] });
     }
-
-    // ──────────────────────────────────────────────────────────────────
-    //  CONFIG (Admin)
-    // ──────────────────────────────────────────────────────────────────
 
     if (cmd === 'setlog') {
       if (!isAdmin(message.member)) return message.reply('❌ Administrateur requis.');
@@ -394,14 +386,13 @@ module.exports = {
           { name: '🎭 Auto-rôle', value: r(config.autoRole), inline: true },
           { name: '📢 PUB Role', value: r(config.pubRole), inline: true },
           { name: '📢 PUB Triggers', value: config.pubTriggers?.join(', ') || '❌', inline: true },
+          { name: '💘 Smash Sélection', value: f(config.smashSelectionChannel), inline: true },
+          { name: '💘 Smash Vote', value: f(config.smashVoteChannel), inline: true },
         )
         .setTimestamp();
       return message.reply({ embeds: [embed] });
     }
 
-    // ──────────────────────────────────────────────────────────────────
-    //  !delete — Réinitialisation complète
-    // ──────────────────────────────────────────────────────────────────
     if (cmd === 'delete') {
       if (!isAdmin(message.member)) return message.reply('❌ Administrateur requis.');
 
@@ -410,11 +401,10 @@ module.exports = {
       const config = getConfig(message.guild.id);
       const welcomeId = config.welcomeChannel;
 
-      // ── Supprimer tous les salons sauf le salon de bienvenue ──────────
       let deletedChannels = 0;
       const channels = message.guild.channels.cache.filter(c =>
         c.id !== welcomeId &&
-        c.id !== message.channel.id // garder le salon actuel pour la réponse
+        c.id !== message.channel.id
       );
 
       for (const [, channel] of channels) {
@@ -422,7 +412,6 @@ module.exports = {
         deletedChannels++;
       }
 
-      // ── Effacer toute la config JSON du bot pour ce serveur ──────────
       const dataDir = path.join(__dirname, '..', '..', 'data');
       for (const fileName of ['config.json', 'tickets.json', 'warns.json']) {
         const filePath = path.join(dataDir, fileName);
@@ -435,7 +424,6 @@ module.exports = {
         }
       }
 
-      // ── Résumé ────────────────────────────────────────────────────────
       const summary = new EmbedBuilder()
         .setColor(0x00FF88)
         .setTitle('✅ Réinitialisation terminée')
@@ -449,7 +437,6 @@ module.exports = {
 
       await message.channel.send({ embeds: [summary] }).catch(() => {});
 
-      // Supprimer aussi le salon actuel (dernier) après le message
       setTimeout(() => {
         if (message.channel.id !== welcomeId) {
           message.channel.delete('!delete — dernier salon').catch(() => {});
