@@ -16,12 +16,14 @@ function readSopVotes() {
   if (!fs.existsSync(sopPath)) return {};
   try { return JSON.parse(fs.readFileSync(sopPath, 'utf8')); } catch { return {}; }
 }
-
 function writeSopVotes(data) {
   fs.writeFileSync(sopPath, JSON.stringify(data, null, 2), 'utf8');
 }
 
-// Groupes de rôles pour le panneau de sélection
+// Suivi des utilisateurs en attente de soumission (pour éviter les doubles clics)
+const pendingSubmissions = new Set();
+
+// Groupes de rôles
 const ROLE_GROUPS = {
   activite: ['NUIT', 'JOURS'],
   identite: ['BOY', 'GIRL', 'EGIRL', 'TRANS'],
@@ -52,122 +54,148 @@ module.exports = {
       } catch (err) {
         console.error(err);
         const msg = { content: '❌ Une erreur est survenue.', flags: 64 };
-        if (interaction.replied || interaction.deferred) {
+        if (interaction.replied || interaction.deferred)
           await interaction.followUp(msg).catch(() => {});
-        } else {
+        else
           await interaction.reply(msg).catch(() => {});
-        }
       }
       return;
     }
 
     // ══════════════════════════════════════════════════════════════════
-    // ── SMASH OR PASS — Panel : Bouton soumission ────────────────────
+    // ── SMASH OR PASS — Bouton : Soumettre une photo ─────────────────
     // ══════════════════════════════════════════════════════════════════
     if (interaction.isButton() && interaction.customId === 'sop_submit') {
-      const modal = new ModalBuilder()
-        .setCustomId('sop_submit_modal')
-        .setTitle('📸 Soumettre une photo Smash or Pass');
+      const userId = interaction.user.id;
 
-      const urlInput = new TextInputBuilder()
-        .setCustomId('sop_photo_url')
-        .setLabel('Lien direct vers ta photo (URL)')
-        .setStyle(TextInputStyle.Short)
-        .setPlaceholder('https://i.imgur.com/exemple.jpg')
-        .setMinLength(10)
-        .setMaxLength(512)
-        .setRequired(true);
+      // Anti-doublon : empêche de cliquer plusieurs fois
+      if (pendingSubmissions.has(userId)) {
+        return interaction.reply({
+          content: '⏳ Tu as déjà une soumission en cours ! Envoie ta photo dans ce salon.',
+          flags: 64,
+        });
+      }
 
-      modal.addComponents(new ActionRowBuilder().addComponents(urlInput));
-      return interaction.showModal(modal);
-    }
-
-    // ── SMASH OR PASS — Modal : Envoi de la photo au salon de vote ───
-    if (interaction.isModalSubmit() && interaction.customId === 'sop_submit_modal') {
-      await interaction.deferReply({ flags: 64 });
-
-      const photoUrl = interaction.fields.getTextInputValue('sop_photo_url').trim();
-      const config   = getConfig(interaction.guild.id);
-
+      const config = getConfig(interaction.guild.id);
       if (!config.smashVoteChannel) {
-        return interaction.editReply({
+        return interaction.reply({
           content: '❌ Le système Smash or Pass n\'est pas encore configuré. Un administrateur doit lancer `/setupsmash`.',
+          flags: 64,
         });
       }
 
-      // Validation de l'URL
-      let validUrl;
-      try {
-        validUrl = new URL(photoUrl);
-        if (!['http:', 'https:'].includes(validUrl.protocol)) throw new Error();
-      } catch {
-        return interaction.editReply({ content: '❌ Le lien n\'est pas valide. Il doit commencer par `https://`.' });
-      }
+      pendingSubmissions.add(userId);
 
-      const imageExt  = /\.(jpg|jpeg|png|gif|webp|bmp|avif|tiff)(\?.*)?$/i.test(photoUrl);
-      const imgHost   = /^https?:\/\/(i\.imgur\.com|cdn\.discordapp\.com|media\.discordapp\.net|i\.redd\.it|pbs\.twimg\.com|images\.unsplash\.com|tenor\.com|c\.tenor\.com)/i.test(photoUrl);
-
-      if (!imageExt && !imgHost) {
-        return interaction.editReply({
-          content: '❌ Le lien ne semble pas être une image directe.\n\n' +
-            '**Conseils :**\n' +
-            '• Sur Discord, fais un clic droit sur une image → **Copier le lien**\n' +
-            '• Sur Imgur, utilise le lien qui se termine par `.jpg` ou `.png`\n' +
-            '• Le lien doit pointer directement vers l\'image, pas vers une page web.',
-        });
-      }
-
-      const voteChannel = interaction.guild.channels.cache.get(config.smashVoteChannel);
-      if (!voteChannel) {
-        return interaction.editReply({ content: '❌ Le salon de vote est introuvable. Contacte un administrateur.' });
-      }
-
-      const botMember = interaction.guild.members.me;
-      if (!voteChannel.permissionsFor(botMember).has(PermissionFlagsBits.SendMessages)) {
-        return interaction.editReply({ content: `❌ Je n'ai pas la permission d'envoyer des messages dans ${voteChannel}.` });
-      }
-
-      // Construire l'embed de vote
-      const embed = new EmbedBuilder()
-        .setColor(0xFF69B4)
-        .setTitle('💘 Smash or Pass ?')
-        .setDescription('Donne ton avis avec les boutons ci-dessous !')
-        .setImage(photoUrl)
-        .addFields(
-          { name: '💚 Smash', value: '**0** vote(s)', inline: true },
-          { name: '❌ Pass',  value: '**0** vote(s)', inline: true },
-        )
-        .setFooter({ text: `Soumis par ${interaction.user.tag}` })
-        .setTimestamp();
-
-      // Envoyer avec des boutons temporaires, puis mettre à jour avec le vrai ID
-      const tempSmash = new ButtonBuilder().setCustomId('sop_smash_TMP').setLabel('💚 Smash').setStyle(ButtonStyle.Success);
-      const tempPass  = new ButtonBuilder().setCustomId('sop_pass_TMP').setLabel('❌ Pass').setStyle(ButtonStyle.Danger);
-      const sentMsg = await voteChannel.send({
-        embeds: [embed],
-        components: [new ActionRowBuilder().addComponents(tempSmash, tempPass)],
-      });
-
-      // Remettre les bons customIds avec le vrai message ID
-      const realSmash = new ButtonBuilder().setCustomId(`sop_smash_${sentMsg.id}`).setLabel('💚 Smash').setStyle(ButtonStyle.Success);
-      const realPass  = new ButtonBuilder().setCustomId(`sop_pass_${sentMsg.id}`).setLabel('❌ Pass').setStyle(ButtonStyle.Danger);
-      await sentMsg.edit({ embeds: [embed], components: [new ActionRowBuilder().addComponents(realSmash, realPass)] });
-
-      return interaction.editReply({
+      await interaction.reply({
         embeds: [new EmbedBuilder()
-          .setColor(0x00FF88)
-          .setTitle('✅ Photo soumise !')
-          .setDescription(`Ta photo a bien été envoyée dans ${voteChannel} pour le vote Smash or Pass ! 🎉`)
+          .setColor(0xFF69B4)
+          .setTitle('📸 Envoie ta photo !')
+          .setDescription(
+            '**Ouvre ta galerie et envoie ton image directement dans ce salon.**\n\n' +
+            '• Sur **téléphone** : appuie sur le 📎 ou l\'icône image\n' +
+            '• Sur **PC** : glisse l\'image ou clique sur 📎\n\n' +
+            '⏳ Tu as **2 minutes** pour envoyer ta photo.\n' +
+            '> Seules les images sont acceptées (jpg, png, gif, webp…)'
+          )
+          .setFooter({ text: 'Ta photo sera supprimée de ce salon et envoyée au salon de vote' })
           .setTimestamp()],
+        flags: 64,
       });
+
+      // Filtre : message du bon utilisateur avec au moins une image en pièce jointe
+      const filter = m =>
+        m.author.id === userId &&
+        m.attachments.some(a => a.contentType && a.contentType.startsWith('image/'));
+
+      try {
+        const collected = await interaction.channel.awaitMessages({
+          filter,
+          max: 1,
+          time: 120_000,
+          errors: ['time'],
+        });
+
+        const userMessage = collected.first();
+        const attachment  = userMessage.attachments.find(a => a.contentType && a.contentType.startsWith('image/'));
+
+        // Supprimer le message de l'utilisateur (garder le salon propre)
+        await userMessage.delete().catch(() => {});
+
+        const voteChannel = interaction.guild.channels.cache.get(config.smashVoteChannel);
+        if (!voteChannel) {
+          pendingSubmissions.delete(userId);
+          return interaction.followUp({
+            content: '❌ Le salon de vote est introuvable. Contacte un administrateur.',
+            flags: 64,
+          });
+        }
+
+        const botMember = interaction.guild.members.me;
+        if (!voteChannel.permissionsFor(botMember).has(PermissionFlagsBits.SendMessages)) {
+          pendingSubmissions.delete(userId);
+          return interaction.followUp({
+            content: `❌ Je n'ai pas la permission d'envoyer des messages dans ${voteChannel}.`,
+            flags: 64,
+          });
+        }
+
+        // Construire l'embed de vote avec l'image attachée
+        const embed = new EmbedBuilder()
+          .setColor(0xFF69B4)
+          .setTitle('💘 Smash or Pass ?')
+          .setDescription('Donne ton avis avec les boutons ci-dessous !')
+          .setImage(attachment.url)
+          .addFields(
+            { name: '💚 Smash', value: '**0** vote(s)', inline: true },
+            { name: '❌ Pass',  value: '**0** vote(s)', inline: true },
+          )
+          .setFooter({ text: `Soumis par ${interaction.user.tag}` })
+          .setTimestamp();
+
+        // Envoyer avec boutons temporaires
+        const tempSmash = new ButtonBuilder().setCustomId('sop_smash_TMP').setLabel('💚 Smash').setStyle(ButtonStyle.Success);
+        const tempPass  = new ButtonBuilder().setCustomId('sop_pass_TMP').setLabel('❌ Pass').setStyle(ButtonStyle.Danger);
+        const sentMsg   = await voteChannel.send({
+          embeds: [embed],
+          components: [new ActionRowBuilder().addComponents(tempSmash, tempPass)],
+        });
+
+        // Remettre les vrais customIds avec le message ID réel
+        const realSmash = new ButtonBuilder().setCustomId(`sop_smash_${sentMsg.id}`).setLabel('💚 Smash').setStyle(ButtonStyle.Success);
+        const realPass  = new ButtonBuilder().setCustomId(`sop_pass_${sentMsg.id}`).setLabel('❌ Pass').setStyle(ButtonStyle.Danger);
+        await sentMsg.edit({ embeds: [embed], components: [new ActionRowBuilder().addComponents(realSmash, realPass)] });
+
+        pendingSubmissions.delete(userId);
+
+        return interaction.followUp({
+          embeds: [new EmbedBuilder()
+            .setColor(0x00FF88)
+            .setTitle('✅ Photo soumise avec succès !')
+            .setDescription(`Ta photo a été envoyée dans ${voteChannel} pour le vote Smash or Pass ! 🎉`)
+            .setTimestamp()],
+          flags: 64,
+        });
+
+      } catch {
+        // Timeout : l'utilisateur n'a pas envoyé de photo à temps
+        pendingSubmissions.delete(userId);
+        return interaction.followUp({
+          embeds: [new EmbedBuilder()
+            .setColor(0xFF4444)
+            .setTitle('⏰ Temps écoulé !')
+            .setDescription('Tu n\'as pas envoyé de photo dans les 2 minutes.\nClique à nouveau sur **📸 Soumettre ma photo** pour réessayer.')
+            .setTimestamp()],
+          flags: 64,
+        });
+      }
     }
 
     // ── SMASH OR PASS — Boutons de vote ─────────────────────────────
     if (interaction.isButton() && (interaction.customId.startsWith('sop_smash_') || interaction.customId.startsWith('sop_pass_'))) {
       await interaction.deferReply({ flags: 64 });
 
-      const parts    = interaction.customId.split('_');
-      const choice   = parts[1]; // 'smash' ou 'pass'
+      const parts     = interaction.customId.split('_');
+      const choice    = parts[1];
       const messageId = parts[2];
 
       if (!messageId || messageId === 'TMP') return interaction.editReply({ content: '❌ Vote invalide.' });
@@ -180,7 +208,6 @@ module.exports = {
       const hadSmash = entry.smash.includes(userId);
       const hadPass  = entry.pass.includes(userId);
 
-      // Retirer le vote précédent
       entry.smash = entry.smash.filter(id => id !== userId);
       entry.pass  = entry.pass.filter(id => id !== userId);
 
@@ -203,7 +230,7 @@ module.exports = {
 
       writeSopVotes(votes);
 
-      // Mettre à jour l'embed avec les nouveaux compteurs
+      // Mettre à jour l'embed
       const originalMessage = await interaction.message.fetch().catch(() => null);
       if (originalMessage) {
         const oldEmbed = originalMessage.embeds[0];
@@ -228,9 +255,7 @@ module.exports = {
       const config    = getConfig(interaction.guild.id);
       const rolePanel = config.rolePanel;
 
-      if (!rolePanel) {
-        return interaction.editReply({ content: '❌ Panneau de rôles non configuré. Lance `/setuproles`.' });
-      }
+      if (!rolePanel) return interaction.editReply({ content: '❌ Panneau de rôles non configuré. Lance `/setuproles`.' });
 
       const groupKey  = interaction.customId === 'role_activite' ? 'activite' : 'identite';
       const groupKeys = ROLE_GROUPS[groupKey];
@@ -241,9 +266,7 @@ module.exports = {
         .map(k => rolePanel[k])
         .filter(id => interaction.member.roles.cache.has(id));
 
-      for (const roleId of toRemove) {
-        await interaction.member.roles.remove(roleId).catch(() => {});
-      }
+      for (const roleId of toRemove) await interaction.member.roles.remove(roleId).catch(() => {});
 
       if (!selected || selected.startsWith('NONE_')) {
         return interaction.editReply({ content: `✅ Rôles **${groupKey === 'activite' ? 'activité' : 'identité'}** retirés.` });
@@ -259,7 +282,7 @@ module.exports = {
       await interaction.member.fetch();
 
       const allPanelRoleIds = Object.values(rolePanel);
-      const updatedRoles = interaction.member.roles.cache
+      const updatedRoles    = interaction.member.roles.cache
         .filter(r => allPanelRoleIds.includes(r.id))
         .map(r => r.toString());
 
@@ -280,18 +303,17 @@ module.exports = {
       const config = getConfig(interaction.guild.id);
 
       if (config.verifRole) {
-        const alreadyVerified = interaction.member.roles.cache.has(config.verifRole);
-        if (alreadyVerified) return interaction.reply({ content: '✅ Tu es déjà vérifié !', flags: 64 });
+        if (interaction.member.roles.cache.has(config.verifRole))
+          return interaction.reply({ content: '✅ Tu es déjà vérifié !', flags: 64 });
       }
 
       const code = createCaptcha(interaction.user.id);
-      const captchaDisplay = formatCaptcha(code);
 
       const embed = new EmbedBuilder()
         .setColor(0x5865F2)
         .setTitle('🔐 Vérification — Captcha')
         .setDescription(
-          `Recopie exactement le code ci-dessous dans le formulaire :\n\n${captchaDisplay}\n\n` +
+          `Recopie exactement le code ci-dessous dans le formulaire :\n\n${formatCaptcha(code)}\n\n` +
           `⏳ Ce code expire dans **5 minutes**.\n` +
           `> Les espaces et la casse n'ont pas d'importance.`
         )
@@ -316,8 +338,7 @@ module.exports = {
         .setCustomId('captcha_input')
         .setLabel('Code captcha (6 caractères)')
         .setStyle(TextInputStyle.Short)
-        .setMinLength(6)
-        .setMaxLength(6)
+        .setMinLength(6).setMaxLength(6)
         .setPlaceholder('Ex: X7K2P9')
         .setRequired(true);
 
