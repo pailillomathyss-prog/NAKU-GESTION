@@ -1,5 +1,5 @@
 const {
-  InteractionType, ChannelType, PermissionFlagsBits,
+  ChannelType, PermissionFlagsBits,
   EmbedBuilder, ButtonBuilder, ButtonStyle, ActionRowBuilder,
   ModalBuilder, TextInputBuilder, TextInputStyle,
 } = require('discord.js');
@@ -23,20 +23,19 @@ function writeSopVotes(data) {
 
 // Groupes de rôles pour le panneau de sélection
 const ROLE_GROUPS = {
-  activite:  ['NUIT', 'JOURS'],
-  identite:  ['BOY', 'GIRL', 'EGIRL', 'TRANS'],
+  activite: ['NUIT', 'JOURS'],
+  identite: ['BOY', 'GIRL', 'EGIRL', 'TRANS'],
 };
 
 module.exports = {
   name: 'interactionCreate',
   async execute(interaction, client) {
 
-    // ── Commandes slash ─────────────────────────────────────────────
+    // ── Commandes slash ──────────────────────────────────────────────
     if (interaction.isChatInputCommand()) {
       const command = client.commands.get(interaction.commandName);
       if (!command) return;
 
-      // Vérification stricte : seuls les Administrateurs peuvent utiliser les commandes
       if (!interaction.member?.permissions?.has(PermissionFlagsBits.Administrator)) {
         return interaction.reply({
           embeds: [new EmbedBuilder()
@@ -62,63 +61,157 @@ module.exports = {
       return;
     }
 
-    // ── Boutons : Vote Smash or Pass ────────────────────────────────
+    // ══════════════════════════════════════════════════════════════════
+    // ── SMASH OR PASS — Panel : Bouton soumission ────────────────────
+    // ══════════════════════════════════════════════════════════════════
+    if (interaction.isButton() && interaction.customId === 'sop_submit') {
+      const modal = new ModalBuilder()
+        .setCustomId('sop_submit_modal')
+        .setTitle('📸 Soumettre une photo Smash or Pass');
+
+      const urlInput = new TextInputBuilder()
+        .setCustomId('sop_photo_url')
+        .setLabel('Lien direct vers ta photo (URL)')
+        .setStyle(TextInputStyle.Short)
+        .setPlaceholder('https://i.imgur.com/exemple.jpg')
+        .setMinLength(10)
+        .setMaxLength(512)
+        .setRequired(true);
+
+      modal.addComponents(new ActionRowBuilder().addComponents(urlInput));
+      return interaction.showModal(modal);
+    }
+
+    // ── SMASH OR PASS — Modal : Envoi de la photo au salon de vote ───
+    if (interaction.isModalSubmit() && interaction.customId === 'sop_submit_modal') {
+      await interaction.deferReply({ flags: 64 });
+
+      const photoUrl = interaction.fields.getTextInputValue('sop_photo_url').trim();
+      const config   = getConfig(interaction.guild.id);
+
+      if (!config.smashVoteChannel) {
+        return interaction.editReply({
+          content: '❌ Le système Smash or Pass n\'est pas encore configuré. Un administrateur doit lancer `/setupsmash`.',
+        });
+      }
+
+      // Validation de l'URL
+      let validUrl;
+      try {
+        validUrl = new URL(photoUrl);
+        if (!['http:', 'https:'].includes(validUrl.protocol)) throw new Error();
+      } catch {
+        return interaction.editReply({ content: '❌ Le lien n\'est pas valide. Il doit commencer par `https://`.' });
+      }
+
+      const imageExt  = /\.(jpg|jpeg|png|gif|webp|bmp|avif|tiff)(\?.*)?$/i.test(photoUrl);
+      const imgHost   = /^https?:\/\/(i\.imgur\.com|cdn\.discordapp\.com|media\.discordapp\.net|i\.redd\.it|pbs\.twimg\.com|images\.unsplash\.com|tenor\.com|c\.tenor\.com)/i.test(photoUrl);
+
+      if (!imageExt && !imgHost) {
+        return interaction.editReply({
+          content: '❌ Le lien ne semble pas être une image directe.\n\n' +
+            '**Conseils :**\n' +
+            '• Sur Discord, fais un clic droit sur une image → **Copier le lien**\n' +
+            '• Sur Imgur, utilise le lien qui se termine par `.jpg` ou `.png`\n' +
+            '• Le lien doit pointer directement vers l\'image, pas vers une page web.',
+        });
+      }
+
+      const voteChannel = interaction.guild.channels.cache.get(config.smashVoteChannel);
+      if (!voteChannel) {
+        return interaction.editReply({ content: '❌ Le salon de vote est introuvable. Contacte un administrateur.' });
+      }
+
+      const botMember = interaction.guild.members.me;
+      if (!voteChannel.permissionsFor(botMember).has(PermissionFlagsBits.SendMessages)) {
+        return interaction.editReply({ content: `❌ Je n'ai pas la permission d'envoyer des messages dans ${voteChannel}.` });
+      }
+
+      // Construire l'embed de vote
+      const embed = new EmbedBuilder()
+        .setColor(0xFF69B4)
+        .setTitle('💘 Smash or Pass ?')
+        .setDescription('Donne ton avis avec les boutons ci-dessous !')
+        .setImage(photoUrl)
+        .addFields(
+          { name: '💚 Smash', value: '**0** vote(s)', inline: true },
+          { name: '❌ Pass',  value: '**0** vote(s)', inline: true },
+        )
+        .setFooter({ text: `Soumis par ${interaction.user.tag}` })
+        .setTimestamp();
+
+      // Envoyer avec des boutons temporaires, puis mettre à jour avec le vrai ID
+      const tempSmash = new ButtonBuilder().setCustomId('sop_smash_TMP').setLabel('💚 Smash').setStyle(ButtonStyle.Success);
+      const tempPass  = new ButtonBuilder().setCustomId('sop_pass_TMP').setLabel('❌ Pass').setStyle(ButtonStyle.Danger);
+      const sentMsg = await voteChannel.send({
+        embeds: [embed],
+        components: [new ActionRowBuilder().addComponents(tempSmash, tempPass)],
+      });
+
+      // Remettre les bons customIds avec le vrai message ID
+      const realSmash = new ButtonBuilder().setCustomId(`sop_smash_${sentMsg.id}`).setLabel('💚 Smash').setStyle(ButtonStyle.Success);
+      const realPass  = new ButtonBuilder().setCustomId(`sop_pass_${sentMsg.id}`).setLabel('❌ Pass').setStyle(ButtonStyle.Danger);
+      await sentMsg.edit({ embeds: [embed], components: [new ActionRowBuilder().addComponents(realSmash, realPass)] });
+
+      return interaction.editReply({
+        embeds: [new EmbedBuilder()
+          .setColor(0x00FF88)
+          .setTitle('✅ Photo soumise !')
+          .setDescription(`Ta photo a bien été envoyée dans ${voteChannel} pour le vote Smash or Pass ! 🎉`)
+          .setTimestamp()],
+      });
+    }
+
+    // ── SMASH OR PASS — Boutons de vote ─────────────────────────────
     if (interaction.isButton() && (interaction.customId.startsWith('sop_smash_') || interaction.customId.startsWith('sop_pass_'))) {
       await interaction.deferReply({ flags: 64 });
 
-      const parts = interaction.customId.split('_');
-      const choice = parts[1]; // 'smash' ou 'pass'
+      const parts    = interaction.customId.split('_');
+      const choice   = parts[1]; // 'smash' ou 'pass'
       const messageId = parts[2];
+
+      if (!messageId || messageId === 'TMP') return interaction.editReply({ content: '❌ Vote invalide.' });
 
       const votes = readSopVotes();
       if (!votes[messageId]) votes[messageId] = { smash: [], pass: [] };
 
-      const entry = votes[messageId];
-      const userId = interaction.user.id;
+      const entry    = votes[messageId];
+      const userId   = interaction.user.id;
+      const hadSmash = entry.smash.includes(userId);
+      const hadPass  = entry.pass.includes(userId);
 
-      const alreadySmash = entry.smash.includes(userId);
-      const alreadyPass  = entry.pass.includes(userId);
-
-      // Retirer le vote précédent si l'utilisateur change d'avis
+      // Retirer le vote précédent
       entry.smash = entry.smash.filter(id => id !== userId);
       entry.pass  = entry.pass.filter(id => id !== userId);
 
       let replyText;
-
       if (choice === 'smash') {
-        if (alreadySmash) {
-          // Déjà voté smash → annuler le vote
+        if (hadSmash) {
           replyText = '↩️ Ton vote **Smash** a été retiré.';
         } else {
           entry.smash.push(userId);
-          replyText = alreadyPass
-            ? '🔄 Tu es passé de **Pass** à **💚 Smash** !'
-            : '💚 Tu as voté **Smash** !';
+          replyText = hadPass ? '🔄 Changé de **Pass** à **💚 Smash** !' : '💚 Tu as voté **Smash** !';
         }
       } else {
-        if (alreadyPass) {
-          // Déjà voté pass → annuler le vote
+        if (hadPass) {
           replyText = '↩️ Ton vote **Pass** a été retiré.';
         } else {
           entry.pass.push(userId);
-          replyText = alreadySmash
-            ? '🔄 Tu es passé de **Smash** à **❌ Pass** !'
-            : '❌ Tu as voté **Pass** !';
+          replyText = hadSmash ? '🔄 Changé de **Smash** à **❌ Pass** !' : '❌ Tu as voté **Pass** !';
         }
       }
 
       writeSopVotes(votes);
 
-      // Mettre à jour l'embed du message original
+      // Mettre à jour l'embed avec les nouveaux compteurs
       const originalMessage = await interaction.message.fetch().catch(() => null);
       if (originalMessage) {
         const oldEmbed = originalMessage.embeds[0];
         if (oldEmbed) {
-          const updatedEmbed = EmbedBuilder.from(oldEmbed)
-            .setFields(
-              { name: '💚 Smash', value: `**${entry.smash.length}** vote(s)`, inline: true },
-              { name: '❌ Pass',  value: `**${entry.pass.length}** vote(s)`,  inline: true },
-            );
+          const updatedEmbed = EmbedBuilder.from(oldEmbed).setFields(
+            { name: '💚 Smash', value: `**${entry.smash.length}** vote(s)`, inline: true },
+            { name: '❌ Pass',  value: `**${entry.pass.length}** vote(s)`,  inline: true },
+          );
           await originalMessage.edit({ embeds: [updatedEmbed] }).catch(() => {});
         }
       }
@@ -126,20 +219,22 @@ module.exports = {
       return interaction.editReply({ content: replyText });
     }
 
+    // ══════════════════════════════════════════════════════════════════
     // ── Select Menu : Sélection de rôles ────────────────────────────
+    // ══════════════════════════════════════════════════════════════════
     if (interaction.isStringSelectMenu() && (interaction.customId === 'role_activite' || interaction.customId === 'role_identite')) {
       await interaction.deferReply({ flags: 64 });
 
-      const config = getConfig(interaction.guild.id);
+      const config    = getConfig(interaction.guild.id);
       const rolePanel = config.rolePanel;
 
       if (!rolePanel) {
         return interaction.editReply({ content: '❌ Panneau de rôles non configuré. Lance `/setuproles`.' });
       }
 
-      const groupKey = interaction.customId === 'role_activite' ? 'activite' : 'identite';
+      const groupKey  = interaction.customId === 'role_activite' ? 'activite' : 'identite';
       const groupKeys = ROLE_GROUPS[groupKey];
-      const selected = interaction.values[0];
+      const selected  = interaction.values[0];
 
       const toRemove = groupKeys
         .filter(k => rolePanel[k])
@@ -151,20 +246,14 @@ module.exports = {
       }
 
       if (!selected || selected.startsWith('NONE_')) {
-        return interaction.editReply({
-          content: `✅ Rôles **${groupKey === 'activite' ? 'activité' : 'identité'}** retirés.`,
-        });
+        return interaction.editReply({ content: `✅ Rôles **${groupKey === 'activite' ? 'activité' : 'identité'}** retirés.` });
       }
 
       const roleId = rolePanel[selected];
-      if (!roleId) {
-        return interaction.editReply({ content: '❌ Rôle introuvable dans la configuration.' });
-      }
+      if (!roleId) return interaction.editReply({ content: '❌ Rôle introuvable dans la configuration.' });
 
       const role = interaction.guild.roles.cache.get(roleId);
-      if (!role) {
-        return interaction.editReply({ content: '❌ Le rôle n\'existe plus sur le serveur.' });
-      }
+      if (!role) return interaction.editReply({ content: '❌ Le rôle n\'existe plus sur le serveur.' });
 
       await interaction.member.roles.add(role).catch(() => {});
       await interaction.member.fetch();
@@ -192,9 +281,7 @@ module.exports = {
 
       if (config.verifRole) {
         const alreadyVerified = interaction.member.roles.cache.has(config.verifRole);
-        if (alreadyVerified) {
-          return interaction.reply({ content: '✅ Tu es déjà vérifié !', flags: 64 });
-        }
+        if (alreadyVerified) return interaction.reply({ content: '✅ Tu es déjà vérifié !', flags: 64 });
       }
 
       const code = createCaptcha(interaction.user.id);
@@ -238,11 +325,11 @@ module.exports = {
       return interaction.showModal(modal);
     }
 
-    // ── Modal : Vérification du captcha ─────────────────────────────
+    // ── Modal : Vérification du captcha ──────────────────────────────
     if (interaction.isModalSubmit() && interaction.customId === 'captcha_modal') {
       await interaction.deferReply({ flags: 64 });
 
-      const input = interaction.fields.getTextInputValue('captcha_input');
+      const input  = interaction.fields.getTextInputValue('captcha_input');
       const result = verifyCaptcha(interaction.user.id, input);
 
       if (!result.valid) {
@@ -253,15 +340,10 @@ module.exports = {
       }
 
       const config = getConfig(interaction.guild.id);
-
-      if (!config.verifRole) {
-        return interaction.editReply({ content: '⚠️ Aucun rôle de vérification configuré.' });
-      }
+      if (!config.verifRole) return interaction.editReply({ content: '⚠️ Aucun rôle de vérification configuré.' });
 
       const role = interaction.guild.roles.cache.get(config.verifRole);
-      if (!role) {
-        return interaction.editReply({ content: '⚠️ Le rôle de vérification est introuvable.' });
-      }
+      if (!role) return interaction.editReply({ content: '⚠️ Le rôle de vérification est introuvable.' });
 
       try {
         await interaction.member.roles.add(role);
@@ -288,11 +370,11 @@ module.exports = {
       });
     }
 
-    // ── Bouton : Ouvrir un ticket ────────────────────────────────────
+    // ── Bouton : Ouvrir un ticket ─────────────────────────────────────
     if (interaction.isButton() && interaction.customId === 'open_ticket') {
       await interaction.deferReply({ flags: 64 });
 
-      const config = getConfig(interaction.guild.id);
+      const config  = getConfig(interaction.guild.id);
       const tickets = getTickets(interaction.guild.id);
 
       const existing = Object.values(tickets).find(t => t.userId === interaction.user.id);
@@ -302,7 +384,7 @@ module.exports = {
       }
 
       const ticketCount = Object.keys(tickets).length + 1;
-      const categoryId = config.ticketCategory || null;
+      const categoryId  = config.ticketCategory || null;
 
       const channel = await interaction.guild.channels.create({
         name: `ticket-${interaction.user.username}`,
@@ -327,7 +409,11 @@ module.exports = {
         .setFooter({ text: `Ticket #${ticketCount}` })
         .setTimestamp();
 
-      await channel.send({ content: `${interaction.user}${config.staffRole ? ` <@&${config.staffRole}>` : ''}`, embeds: [embed], components: [new ActionRowBuilder().addComponents(closeBtn)] });
+      await channel.send({
+        content: `${interaction.user}${config.staffRole ? ` <@&${config.staffRole}>` : ''}`,
+        embeds: [embed],
+        components: [new ActionRowBuilder().addComponents(closeBtn)],
+      });
 
       await sendLog(client, interaction.guild.id, 'ticket_open', {
         title: 'Ticket Ouvert',
@@ -340,18 +426,18 @@ module.exports = {
       return interaction.editReply({ content: `✅ Ton ticket a été créé : ${channel}` });
     }
 
-    // ── Bouton : Fermer le ticket ────────────────────────────────────
+    // ── Bouton : Fermer le ticket ─────────────────────────────────────
     if (interaction.isButton() && interaction.customId === 'close_ticket') {
       await interaction.deferReply({ flags: 64 });
 
-      const config = getConfig(interaction.guild.id);
+      const config  = getConfig(interaction.guild.id);
       const tickets = getTickets(interaction.guild.id);
-      const ticket = tickets[interaction.channel.id];
+      const ticket  = tickets[interaction.channel.id];
 
       if (!ticket) return interaction.editReply({ content: '❌ Ce salon n\'est pas un ticket.' });
 
       const hasStaff = config.staffRole && interaction.member.roles.cache.has(config.staffRole);
-      const isOwner = ticket.userId === interaction.user.id;
+      const isOwner  = ticket.userId === interaction.user.id;
       if (!hasStaff && !isOwner && !interaction.member.permissions.has(PermissionFlagsBits.ManageChannels)) {
         return interaction.editReply({ content: '❌ Tu n\'as pas la permission de fermer ce ticket.' });
       }
@@ -373,11 +459,11 @@ module.exports = {
 
 function formatCaptcha(code) {
   const blocks = {
-    A:'🅰', B:'🅱', C:'🇨', D:'🇩', E:'🇪', F:'🇫', G:'🇬', H:'🇭',
-    J:'🇯', K:'🇰', L:'🇱', M:'🇲', N:'🇳', P:'🇵', Q:'🇶', R:'🇷',
-    S:'🇸', T:'🇹', U:'🇺', V:'🇻', W:'🇼', X:'🇽', Y:'🇾', Z:'🇿',
-    '2':'2️⃣', '3':'3️⃣', '4':'4️⃣', '5':'5️⃣', '6':'6️⃣',
-    '7':'7️⃣', '8':'8️⃣', '9':'9️⃣',
+    A: '🅰', B: '🅱', C: '🇨', D: '🇩', E: '🇪', F: '🇫', G: '🇬', H: '🇭',
+    J: '🇯', K: '🇰', L: '🇱', M: '🇲', N: '🇳', P: '🇵', Q: '🇶', R: '🇷',
+    S: '🇸', T: '🇹', U: '🇺', V: '🇻', W: '🇼', X: '🇽', Y: '🇾', Z: '🇿',
+    '2': '2️⃣', '3': '3️⃣', '4': '4️⃣', '5': '5️⃣', '6': '6️⃣',
+    '7': '7️⃣', '8': '8️⃣', '9': '9️⃣',
   };
   return `> ## ${code.split('').map(c => blocks[c] || c).join(' ')}`;
 }
