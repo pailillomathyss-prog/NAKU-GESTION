@@ -4,7 +4,7 @@ const { sendLog } = require('../utils/logger');
 const { checkLink, checkSpam, checkSticker } = require('../utils/automod');
 const { incrementMessages } = require('../utils/stats');
 const {
-  DURATIONS_MS: GW_DURATIONS_MS, CONDITION_LABELS: GW_CONDITION_LABELS,
+  parseDuration: parseGwDuration, CONDITION_LABELS: GW_CONDITION_LABELS,
   createGiveaway, endGiveaway, rerollGiveaway, findByMessageId, listActive,
 } = require('../utils/giveaway');
 const fs = require('fs');
@@ -419,7 +419,7 @@ module.exports = {
         const condition = (args[3] || 'aucune').toLowerCase();
         const validConditions = ['aucune', 'invitations', 'messages', 'vocal'];
 
-        if (!GW_DURATIONS_MS[duree]) return message.reply(`❌ Durée invalide. Options : ${Object.keys(GW_DURATIONS_MS).join(', ')}`);
+        if (!parseGwDuration(duree)) return message.reply('❌ Durée invalide. Format : un nombre suivi de `s` (secondes), `m` (minutes), `h` (heures) ou `j` (jours). Exemples : `30s`, `10m`, `10h`, `2j`.');
         if (isNaN(gagnants) || gagnants < 1) return message.reply('❌ Nombre de gagnants invalide.');
         if (!validConditions.includes(condition)) return message.reply(`❌ Condition invalide. Options : ${validConditions.join(', ')}`);
 

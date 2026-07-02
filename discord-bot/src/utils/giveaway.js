@@ -18,11 +18,19 @@ function writeAll(data) {
   fs.writeFileSync(gwPath, JSON.stringify(data, null, 2), 'utf8');
 }
 
-const DURATIONS_MS = {
-  '1m': 60 * 1000, '5m': 5 * 60 * 1000, '10m': 10 * 60 * 1000, '30m': 30 * 60 * 1000,
-  '1h': 3600 * 1000, '6h': 6 * 3600 * 1000, '12h': 12 * 3600 * 1000,
-  '1j': 86400 * 1000, '3j': 3 * 86400 * 1000, '7j': 7 * 86400 * 1000,
-};
+// Formats acceptés : 30s, 10m, 6h, 2j (nombre entier + unité s/m/h/j).
+// Compatibilité conservée avec les anciennes clés fixes (1m, 5m, 10m, 30m, 1h, 6h, 12h, 1j, 3j, 7j).
+const UNIT_MS = { s: 1000, m: 60 * 1000, h: 3600 * 1000, j: 86400 * 1000 };
+
+function parseDuration(input) {
+  if (!input) return null;
+  const match = String(input).trim().toLowerCase().match(/^(\d+)\s*(s|m|h|j)$/);
+  if (!match) return null;
+  const [, amount, unit] = match;
+  const n = parseInt(amount, 10);
+  if (isNaN(n) || n < 1) return null;
+  return n * UNIT_MS[unit];
+}
 
 const CONDITION_LABELS = {
   aucune: 'Aucune condition — ouvert à tous',
@@ -78,7 +86,7 @@ function pickWinners(gw) {
 }
 
 async function createGiveaway(client, { guild, channel, host, prize, durationKey, winnersCount, condition, seuil }) {
-  const ms = DURATIONS_MS[durationKey];
+  const ms = parseDuration(durationKey);
   if (!ms) throw new Error('DUREE_INVALIDE');
 
   const endAt = Date.now() + ms;
@@ -211,7 +219,7 @@ async function checkExpiredGiveaways(client) {
 }
 
 module.exports = {
-  DURATIONS_MS, CONDITION_LABELS, conditionMet,
+  parseDuration, CONDITION_LABELS, conditionMet,
   buildEmbed, buildRow, createGiveaway, endGiveaway, rerollGiveaway,
   checkExpiredGiveaways, getGiveaway, findByMessageId, addParticipant, listActive,
 };

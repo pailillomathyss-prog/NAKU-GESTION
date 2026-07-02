@@ -1,6 +1,6 @@
 const { SlashCommandBuilder, PermissionFlagsBits, EmbedBuilder } = require('discord.js');
 const {
-  CONDITION_LABELS,
+  parseDuration, CONDITION_LABELS,
   createGiveaway, endGiveaway, rerollGiveaway, findByMessageId, listActive,
 } = require('../../utils/giveaway');
 
@@ -13,19 +13,7 @@ module.exports = {
       sub.setName('start')
         .setDescription('Lancer un nouveau giveaway')
         .addStringOption(o => o.setName('lot').setDescription('Le lot à gagner').setRequired(true))
-        .addStringOption(o => o.setName('duree').setDescription('Durée du giveaway').setRequired(true)
-          .addChoices(
-            { name: '1 minute', value: '1m' },
-            { name: '5 minutes', value: '5m' },
-            { name: '10 minutes', value: '10m' },
-            { name: '30 minutes', value: '30m' },
-            { name: '1 heure', value: '1h' },
-            { name: '6 heures', value: '6h' },
-            { name: '12 heures', value: '12h' },
-            { name: '1 jour', value: '1j' },
-            { name: '3 jours', value: '3j' },
-            { name: '7 jours', value: '7j' },
-          ))
+        .addStringOption(o => o.setName('duree').setDescription('Ex : 30s, 10m, 10h, 2j (nombre + s/m/h/j)').setRequired(true))
         .addIntegerOption(o => o.setName('gagnants').setDescription('Nombre de gagnants').setRequired(true).setMinValue(1))
         .addStringOption(o => o.setName('condition').setDescription('Condition de participation').setRequired(true)
           .addChoices(
@@ -61,6 +49,13 @@ module.exports = {
       const gagnants  = interaction.options.getInteger('gagnants');
       const condition = interaction.options.getString('condition');
       const seuil     = interaction.options.getInteger('seuil') || 0;
+
+      if (!parseDuration(duree)) {
+        return interaction.reply({
+          content: '❌ Durée invalide. Format : un nombre suivi de `s` (secondes), `m` (minutes), `h` (heures) ou `j` (jours). Exemples : `30s`, `10m`, `10h`, `2j`.',
+          flags: 64,
+        });
+      }
 
       if (condition !== 'aucune' && seuil < 1) {
         return interaction.reply({
