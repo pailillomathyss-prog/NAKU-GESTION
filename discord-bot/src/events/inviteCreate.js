@@ -1,9 +1,11 @@
 const { sendLog } = require('../utils/logger');
+const { setInvite } = require('../utils/invites');
 
 module.exports = {
   name: 'inviteCreate',
   async execute(invite, client) {
     if (!invite.guild) return;
+    setInvite(invite.guild.id, invite.code, invite.uses || 0, invite.inviter?.id || null);
     await sendLog(client, invite.guild.id, 'invite_create', {
       title: '🔗 Invitation Créée',
       fields: [

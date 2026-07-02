@@ -2,6 +2,8 @@ const { EmbedBuilder, PermissionFlagsBits } = require('discord.js');
 const { getConfig } = require('../utils/config');
 const { sendLog } = require('../utils/logger');
 const { checkRaid, checkBot } = require('../utils/automod');
+const { findUsedInvite } = require('../utils/invites');
+const { addInvites } = require('../utils/stats');
 
 // Stockage des membres récemment kickés lors d'un raid (éviter boucle)
 const raidKicked = new Set();
@@ -70,6 +72,16 @@ module.exports = {
       return;
     }
 
+    // ── Suivi des invitations (pour les conditions de giveaway) ───────
+    try {
+      const usedInvite = await findUsedInvite(member.guild);
+      if (usedInvite?.inviter && !usedInvite.inviter.bot && usedInvite.inviter.id !== member.id) {
+        addInvites(member.guild.id, usedInvite.inviter.id, 1);
+      }
+    } catch (err) {
+      console.warn('⚠️  Suivi invitation :', err.message);
+    }
+
     // ── Log arrivée normale ──────────────────────────────────────────
     await sendLog(client, member.guild.id, 'member_join', {
       title: 'Membre Rejoint',
@@ -83,7 +95,7 @@ module.exports = {
       ],
     });
 
-    // ── Message de bienvenue ─────────────────────────────────────────
+    // ── Message de bienvenue ───────────────────────────────────���─────
     if (config.welcomeChannel) {
       const channel = member.guild.channels.cache.get(config.welcomeChannel);
       if (channel) {

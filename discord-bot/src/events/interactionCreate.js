@@ -8,6 +8,7 @@ const path = require('path');
 const { getConfig, setTicket, getTickets, deleteTicket } = require('../utils/config');
 const { sendLog } = require('../utils/logger');
 const { createCaptcha, verifyCaptcha } = require('../utils/captcha');
+const { getGiveaway, addParticipant, conditionMet, buildEmbed: buildGwEmbed } = require('../utils/giveaway');
 
 // ── Smash or Pass — stockage des votes ──────────────────────────────────────
 const sopPath = path.join(__dirname, '../../data/smashvotes.json');
@@ -33,7 +34,7 @@ module.exports = {
   name: 'interactionCreate',
   async execute(interaction, client) {
 
-    // ── Commandes slash ──────────────────────────────────────────────
+    // ── Commandes slash ──────────────────────────��───────────────────
     if (interaction.isChatInputCommand()) {
       const command = client.commands.get(interaction.commandName);
       if (!command) return;
@@ -58,6 +59,41 @@ module.exports = {
           await interaction.followUp(msg).catch(() => {});
         else
           await interaction.reply(msg).catch(() => {});
+      }
+      return;
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // ── GIVEAWAY — Bouton : Participer ───────────────────────────────
+    // ══════════════════════════════════════════════════════════════════
+    if (interaction.isButton() && interaction.customId.startsWith('gw_join_')) {
+      const gwId = interaction.customId.replace('gw_join_', '');
+      const gw = getGiveaway(gwId);
+
+      if (!gw) return interaction.reply({ content: '❌ Ce giveaway n\'existe plus.', flags: 64 });
+      if (gw.ended || gw.endAt <= Date.now()) return interaction.reply({ content: '❌ Ce giveaway est terminé.', flags: 64 });
+
+      if (gw.participants.includes(interaction.user.id)) {
+        return interaction.reply({ content: '✅ Tu participes déjà à ce giveaway !', flags: 64 });
+      }
+
+      if (!conditionMet(interaction.guild.id, interaction.user.id, gw.condition, gw.seuil)) {
+        const labels = { invitations: 'invitation(s)', messages: 'message(s) envoyé(s)', vocal: 'minute(s) en vocal' };
+        return interaction.reply({
+          content: `❌ Tu ne remplis pas la condition pour participer : **${gw.seuil}** ${labels[gw.condition] || ''} requis.`,
+          flags: 64,
+        });
+      }
+
+      const result = addParticipant(gwId, interaction.user.id);
+      if (!result.ok) return interaction.reply({ content: '❌ Impossible de rejoindre ce giveaway.', flags: 64 });
+
+      const updatedGw = getGiveaway(gwId);
+      try {
+        await interaction.update({ embeds: [buildGwEmbed(updatedGw)] });
+        await interaction.followUp({ content: '✅ Tu participes maintenant au giveaway ! Bonne chance 🍀', flags: 64 });
+      } catch {
+        await interaction.reply({ content: '✅ Participation enregistrée !', flags: 64 }).catch(() => {});
       }
       return;
     }
@@ -190,7 +226,7 @@ module.exports = {
       }
     }
 
-    // ── SMASH OR PASS — Boutons de vote ─────────────────────────────
+    // ── SMASH OR PASS — Boutons de vote ─────��───────────────────────
     if (interaction.isButton() && (interaction.customId.startsWith('sop_smash_') || interaction.customId.startsWith('sop_pass_'))) {
       await interaction.deferReply({ flags: 64 });
 
@@ -482,7 +518,7 @@ function formatCaptcha(code) {
   const blocks = {
     A: '🅰', B: '🅱', C: '🇨', D: '🇩', E: '🇪', F: '🇫', G: '🇬', H: '🇭',
     J: '🇯', K: '🇰', L: '🇱', M: '🇲', N: '🇳', P: '🇵', Q: '🇶', R: '🇷',
-    S: '🇸', T: '🇹', U: '🇺', V: '🇻', W: '🇼', X: '🇽', Y: '🇾', Z: '🇿',
+    S: '🇸', T: '���', U: '🇺', V: '🇻', W: '🇼', X: '🇽', Y: '🇾', Z: '🇿',
     '2': '2️⃣', '3': '3️⃣', '4': '4️⃣', '5': '5️⃣', '6': '6️⃣',
     '7': '7️⃣', '8': '8️⃣', '9': '9️⃣',
   };

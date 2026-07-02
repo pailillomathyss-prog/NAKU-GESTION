@@ -2,6 +2,11 @@ const { EmbedBuilder, PermissionFlagsBits, ChannelType } = require('discord.js')
 const { getWarns, addWarn, getConfig, setConfig } = require('../utils/config');
 const { sendLog } = require('../utils/logger');
 const { checkLink, checkSpam, checkSticker } = require('../utils/automod');
+const { incrementMessages } = require('../utils/stats');
+const {
+  DURATIONS_MS: GW_DURATIONS_MS, CONDITION_LABELS: GW_CONDITION_LABELS,
+  createGiveaway, endGiveaway, rerollGiveaway, findByMessageId, listActive,
+} = require('../utils/giveaway');
 const fs = require('fs');
 const path = require('path');
 
@@ -103,12 +108,16 @@ module.exports = {
     }
 
     if (message.author.bot || !message.guild) return;
+
+    // ── Statistiques (messages) — utilisées pour les conditions de giveaway ──
+    incrementMessages(message.guild.id, message.author.id);
+
     if (!message.content.startsWith(PREFIX)) return;
 
     const args = message.content.slice(PREFIX.length).trim().split(/\s+/);
     const cmd = args.shift().toLowerCase();
 
-    // ── !help ────────────────────────────────────────────────────────
+    // ── !help ───────────────��────────────────────────────────────────
     if (cmd === 'help') {
       const embed = new EmbedBuilder()
         .setColor(0x5865F2)
@@ -140,7 +149,14 @@ module.exports = {
             '`!setautorole @role`',
             '`!config`',
           ].join('\n'), inline: true },
-          { name: '🔢 Durées pour `!mute`', value: '`10m` `30m` `1h` `6h` `12h` `1j` `3j` `7j`', inline: false },
+          { name: '🎉 Giveaways (Admin)', value: [
+            '`!gw start <durée> <gagnants> <condition> [seuil] <lot>`',
+            '`!gw end <messageId>`',
+            '`!gw reroll <messageId>`',
+            '`!gw list`',
+            'Conditions : `aucune` `invitations` `messages` `vocal`',
+          ].join('\n'), inline: false },
+          { name: '🔢 Durées pour `!mute` / `!gw`', value: '`10m` `30m` `1h` `6h` `12h` `1j` `3j` `7j`', inline: false },
           { name: '💡 Commandes slash `/` disponibles', value: 'setrules · setupticket · setupverif · automod · syncperms · setuproles · setpub · serverinfo · lock · unlock', inline: false },
         )
         .setFooter({ text: 'PV•PROTECT — Modération complète' })
@@ -391,6 +407,123 @@ module.exports = {
         )
         .setTimestamp();
       return message.reply({ embeds: [embed] });
+    }
+
+    if (cmd === 'gw') {
+      if (!isAdmin(message.member)) return message.reply('❌ Administrateur requis.');
+      const sub = (args[0] || '').toLowerCase();
+
+      if (sub === 'start') {
+        const duree = args[1];
+        const gagnants = parseInt(args[2]);
+        const condition = (args[3] || 'aucune').toLowerCase();
+        const validConditions = ['aucune', 'invitations', 'messages', 'vocal'];
+
+        if (!GW_DURATIONS_MS[duree]) return message.reply(`❌ Durée invalide. Options : ${Object.keys(GW_DURATIONS_MS).join(', ')}`);
+        if (isNaN(gagnants) || gagnants < 1) return message.reply('❌ Nombre de gagnants invalide.');
+        if (!validConditions.includes(condition)) return message.reply(`❌ Condition invalide. Options : ${validConditions.join(', ')}`);
+
+        let seuil = 0;
+        let prizeArgs;
+        if (condition !== 'aucune') {
+          seuil = parseInt(args[4]);
+          if (isNaN(seuil) || seuil < 1) return message.reply(`❌ \`!gw start <durée> <gagnants> ${condition} <seuil> <lot>\``);
+          prizeArgs = args.slice(5);
+        } else {
+          prizeArgs = args.slice(4);
+        }
+
+        const prize = prizeArgs.join(' ');
+        if (!prize) return message.reply('❌ Précise un lot. Exemple : `!gw start 1h 1 messages 50 Nitro Classic`');
+
+        await message.delete().catch(() => {});
+
+        const { gw } = await createGiveaway(client, {
+          guild: message.guild, channel: message.channel, host: message.author,
+          prize, durationKey: duree, winnersCount: gagnants, condition, seuil,
+        });
+
+        // ── DM à tous les membres pour annoncer le giveaway ──────────
+        await message.guild.members.fetch();
+        const members = message.guild.members.cache.filter(m => !m.user.bot);
+        const jumpLink = `https://discord.com/channels/${message.guild.id}/${message.channel.id}/${gw.messageId}`;
+
+        const announceEmbed = new EmbedBuilder()
+          .setColor(0xFFD700)
+          .setTitle(`🎉 Nouveau Giveaway sur ${message.guild.name} !`)
+          .setThumbnail(message.guild.iconURL({ dynamic: true }))
+          .setDescription(
+            `🏆 **Lot :** ${prize}\n` +
+            `🕐 **Fin :** <t:${Math.floor(gw.endAt / 1000)}:R>\n` +
+            `🎖️ **Gagnant(s) :** ${gagnants}\n` +
+            `📋 **Condition :** ${GW_CONDITION_LABELS[condition]}${condition !== 'aucune' ? ` (**${seuil}** requis)` : ''}\n\n` +
+            `👉 [Clique ici pour participer](${jumpLink})`
+          )
+          .setFooter({ text: `Organisé par ${message.author.tag}` })
+          .setTimestamp();
+
+        const progress = await message.channel.send(`⏳ Envoi des DM d'annonce à **${members.size}** membre(s)...`);
+
+        let sent = 0, failed = 0, count = 0;
+        for (const [, member] of members) {
+          try { await member.user.send({ embeds: [announceEmbed] }); sent++; }
+          catch { failed++; }
+          count++;
+          if (count % 10 === 0) {
+            await progress.edit(`⏳ Envoi des DM d'annonce... (${count}/${members.size})`).catch(() => {});
+          }
+          await new Promise(r => setTimeout(r, 1100));
+        }
+
+        await progress.edit(`✅ Giveaway lancé pour **${prize}** ! 📨 ${sent} membre(s) prévenu(s) par DM${failed ? ` (${failed} DM échoué(s), DMs désactivés)` : ''}.`).catch(() => {});
+        setTimeout(() => progress.delete().catch(() => {}), 15000);
+        return;
+      }
+
+      if (sub === 'end') {
+        const messageId = args[1];
+        if (!messageId) return message.reply('❌ `!gw end <messageId>`');
+        const found = findByMessageId(message.guild.id, messageId);
+        if (!found) return message.reply('❌ Giveaway introuvable.');
+        const [gwId, gw] = found;
+        if (gw.ended) return message.reply('❌ Ce giveaway est déjà terminé.');
+        const winners = await endGiveaway(client, gwId);
+        return message.reply(
+          winners && winners.length
+            ? `✅ Giveaway terminé. Gagnant(s) : ${winners.map(id => `<@${id}>`).join(', ')}`
+            : '✅ Giveaway terminé, aucun participant valide.'
+        );
+      }
+
+      if (sub === 'reroll') {
+        const messageId = args[1];
+        if (!messageId) return message.reply('❌ `!gw reroll <messageId>`');
+        const found = findByMessageId(message.guild.id, messageId);
+        if (!found) return message.reply('❌ Giveaway introuvable.');
+        const [gwId, gw] = found;
+        if (!gw.ended) return message.reply('❌ Ce giveaway n\'est pas encore terminé. Utilise `!gw end` d\'abord.');
+        const winners = await rerollGiveaway(client, gwId);
+        return message.reply(
+          winners && winners.length
+            ? `✅ Reroll effectué. Nouveau(x) gagnant(s) : ${winners.map(id => `<@${id}>`).join(', ')}`
+            : '❌ Aucun participant valide pour le reroll.'
+        );
+      }
+
+      if (sub === 'list') {
+        const active = listActive(message.guild.id);
+        if (!active.length) return message.reply('📭 Aucun giveaway actif sur ce serveur.');
+        const embed = new EmbedBuilder()
+          .setColor(0xFFD700)
+          .setTitle('🎉 Giveaways actifs')
+          .setDescription(active.map(g =>
+            `**${g.prize}** — <t:${Math.floor(g.endAt / 1000)}:R> — ${g.participants.length} participant(s)\n[Voir le giveaway](https://discord.com/channels/${g.guildId}/${g.channelId}/${g.messageId})`
+          ).join('\n\n'))
+          .setTimestamp();
+        return message.reply({ embeds: [embed] });
+      }
+
+      return message.reply('❌ `!gw start <durée> <gagnants> <condition> [seuil] <lot>` | `!gw end <messageId>` | `!gw reroll <messageId>` | `!gw list`');
     }
 
     if (cmd === 'delete') {

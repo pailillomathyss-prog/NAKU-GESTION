@@ -3,6 +3,8 @@ const fs = require('fs');
 const path = require('path');
 const cloudSync = require('../utils/cloudSync');
 const { restoreFromCloud, getConfig } = require('../utils/config');
+const { cacheGuildInvites } = require('../utils/invites');
+const { checkExpiredGiveaways } = require('../utils/giveaway');
 
 /** Extrait le texte du statut personnalisé d'une Presence */
 function getStatusText(presence) {
@@ -86,10 +88,16 @@ module.exports = {
       try {
         await guild.members.fetch();
         await scanPresences(guild, client);
+        await cacheGuildInvites(guild);
       } catch (err) {
         console.warn(`⚠️  Scan présences ${guild.name} :`, err.message);
       }
     }
+
+    // ── Vérification périodique des giveaways expirés ──────────────────
+    setInterval(() => {
+      checkExpiredGiveaways(client).catch(err => console.error('Erreur check giveaways:', err.message));
+    }, 30000);
 
     // ── Auto-déploiement des commandes slash ──────────────────────────
     if (!process.env.CLIENT_ID) {
